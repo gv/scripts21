@@ -42,13 +42,12 @@ proc gap::handleRead {d} {
 	}
 	if [regexp {^[AMDT? ]([AMDT? ]) (.+)$} $s -> mode p] {
 		if {$mode != " "} {
-			# TODO safer dequote
-			# TODO try [subst]
-			if [catch "set q $p"  msg] {
-				puts stderr "Error appending path '$s': $msg"
-			} elseif {![string match $q */]} {
+			if [regexp {^"(.*)"$} $p -> p] {
+				set p [subst -nocommands -novariables $p]
+			}
+			if {![string match $p */]} {
 				lappend state(paths$mode)\
-					[encoding convertfrom utf-8 $q]
+					[encoding convertfrom utf-8 $p]
 				incr state(size)
 			}
 		}
