@@ -1,4 +1,0 @@
-#!/bin/bash
-dir=`dirname $0`
-scp $dir/*.py  admin@king:/opt/t
-scp $dir/m/*.js $dir/m/*.css admin@king:/opt/t/m

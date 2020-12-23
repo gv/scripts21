@@ -1,2 +1,0 @@
-#!/bin/bash
-perf script -s /home/vg/stuff/observation/breath.py
