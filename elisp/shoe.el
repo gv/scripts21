@@ -366,9 +366,12 @@ next grep is started"
 
 (setq tramp-mode nil)
 
-(fset 'yes-or-no-p 'y-or-n-p)
-(fset 'c 'compile)
-(fset 'vtt 'visit-tags-table)
+(defalias 'yes-or-no-p 'y-or-n-p)
+(defalias 'c 'compile)
+(defalias 'cbm 'compact-blame-mode)
+(defun vtt () (interactive)
+	   (tags-reset-tags-tables)
+	   (command-execute 'visit-tags-table))
 
 (server-start)
 (setenv
@@ -387,6 +390,10 @@ next grep is started"
 (setq vc-command-messages t)
 (setq visible-bell t)
 (fringe-mode 0)
+(add-hook 'after-save-hook 'executable-make-buffer-file-executable-if-script-p)
+;; remove git info from mode line
+(defun vc-refresh-state () "Disable"
+	   (message "vc-refresh-state disabled"))
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
 
