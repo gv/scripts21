@@ -1,0 +1,3 @@
+[submodule "compact-blame"]
+	path = compact-blame
+	url = https://github.com/gv/compact-blame.git

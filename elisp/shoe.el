@@ -239,7 +239,10 @@
 (setq rust-cargo-bin "/Users/vg/.cargo/bin/cargo")
 (autoload 'haskell-mode "haskell-mode-2.8.0/haskell-site-file" "HM" t)
 (add-hook 'haskell-mode-hook 'turn-on-haskell-indentation)
-(autoload 'compact-blame-mode "compact-blame.el" "Git blame viewer" t)
+(prog1
+  (load "../compact-blame/compact-blame.el")
+  (setq compact-blame-bg1 "rainbow")
+  (setq compact-blame-bg2 "rainbow"))
 
 ;; for ViewSourceWith Firefox extension
 ;;(add-to-list 'auto-mode-alist '("index.\\.*" . wikipedia-mode))
@@ -315,6 +318,11 @@ next grep is started"
   (message "truncate-lines=%s" (setq truncate-lines nil)))
 (add-hook 'log-view-mode-hook 'vg-tune-log-view)
 
+(defun vg-tune-lisp ()
+  (modify-syntax-entry ?@ ".")
+  (message "Char classes:@=%s" (string (char-syntax ?@))))
+(add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
+
 (if window-system
 	(global-set-key (kbd "M-[") 'gtags-find-rtag)
 )
@@ -369,6 +377,7 @@ next grep is started"
 (defalias 'yes-or-no-p 'y-or-n-p)
 (defalias 'c 'compile)
 (defalias 'cbm 'compact-blame-mode)
+(defalias 'gl 'git-log)
 (defun vtt () (interactive)
 	   (tags-reset-tags-tables)
 	   (command-execute 'visit-tags-table))
@@ -394,6 +403,8 @@ next grep is started"
 ;; remove git info from mode line
 (defun vc-refresh-state () "Disable"
 	   (message "vc-refresh-state disabled"))
+(defun vc-after-save () "Disable"
+	   (message "vc-after-save disabled"))
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
 
