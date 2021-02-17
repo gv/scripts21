@@ -357,13 +357,13 @@ next grep is started"
 
 (defun git-log (options)
   "Print log with options"
-  (interactive "sGit log options:")
+  (interactive "sGit log options: ")
   (let ((bn "*git-log*"))
 	(set-buffer (get-buffer-create bn))
 	(vc-setup-buffer bn)
 	;;(let ((inhibit-read-only t))
 	;; (with-current-buffer bn
-	(vc-git-command bn 'async nil "log" options)
+	(apply 'vc-git-command bn 'async nil "log" (split-string options))
 	;;	))
 	(setq vc-log-view-type 'long log-view-vc-backend 'git)
 	(vc-git-log-view-mode)
@@ -379,6 +379,7 @@ next grep is started"
 (defalias 'cbm 'compact-blame-mode)
 (defalias 'gl 'git-log)
 (defun vtt () (interactive)
+	   (require 'etags)
 	   (tags-reset-tags-tables)
 	   (command-execute 'visit-tags-table))
 
