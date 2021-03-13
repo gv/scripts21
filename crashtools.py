@@ -17,6 +17,8 @@ def getId(m):
 def num(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
 
+ptrSize = 8
+
 class Count:
 	def __init__(self):
 		self.absent = 0
@@ -104,9 +106,11 @@ class Target(Util):
 	def getSymbolFileName(self, m):
 		if m.GetSymbolFileSpec() == m.file:
 			return "-"
+		if re.match(".+[.]dSYM/", m.GetSymbolFileSpec().dirname):
+			return "dSYM"
 		return m.GetSymbolFileSpec()
 
-	def getSourceLinePrefix(self, f):
+	def getSourceLine(self, f):
 		if not f.line_entry.IsValid():
 			return " "
 		cwd = os.getcwd().split(os.sep)[-1]
@@ -115,22 +119,125 @@ class Target(Util):
 			path = os.sep.join(parts[parts.index(cwd) + 1:])
 		except ValueError:
 			path = f.line_entry.file.fullpath
-		return "%s:%d:" % (path, f.line_entry.line)
+		return "%s:%d" % (path, f.line_entry.line)
 
+	def getPossibleSourceLines(self, addr, template):
+		if not addr.line_entry.IsValid():
+			return []
+		return self.getPossibleSourceLines2(
+			addr.line_entry.file, addr.line_entry.line, template)
+
+	def getPossibleSourceLines2(self, filespec, lineNumber, template):
+		cwd = os.getcwd().split(os.sep)[-1]
+		parts = filespec.fullpath.split(os.sep)
+		try:
+			path = os.sep.join(parts[parts.index(cwd) + 1:])
+		except ValueError:
+			found = 0
+			for root, dirnames, filenames in os.walk("."):
+				if not filespec.basename in filenames:
+					continue
+				yield template % (
+					os.path.join(root, filespec.basename),
+					lineNumber)
+				found += 1
+			if not found:
+				yield template % (
+					filespec.fullpath, lineNumber)
+			return
+		yield template % (path, lineNumber)
+
+	def printStackInfo(self, t):
+		sp = t.frames[0].sp
+		reg = lldb.SBMemoryRegionInfo()
+		check(self.process.GetMemoryRegionInfo(sp, reg))
+		print("****%3d: sp=%X in %X-%X (%d entries) '%s'" % (
+			t.idx, t.frames[0].sp,
+			reg.GetRegionBase(), reg.GetRegionEnd(),
+			(reg.GetRegionEnd() - reg.GetRegionBase())/ptrSize,
+			t.GetStopDescription(80)))
+		
+	
 	def printStacks(self):
 		for t in self.process.threads:
-			print("%3d %8d ================= %d '%s'" % (
-				t.idx, t.id, t.stop_reason, t.GetStopDescription(80)))
+			self.printStackInfo(t)
 			for f in t.frames:
-				print("%s %3d %3d %16X '%s' %s (%s)" % (
-					self.getSourceLinePrefix(f), 
+				printed = 0
+				for prefix in self.getPossibleSourceLines(f, "%s:%d: "):
+					if printed:
+						sys.stdout.write("...\n")
+					sys.stdout.write(prefix)
+					sys.stdout.flush()
+				print("%3d %3d %16X '%s' %s (%s)" % (
 					t.idx, f.idx, f.pc, f.addr.symbol.name,
 					self.getName(f.addr.module),
 					self.getSymbolFileName(f.addr.module)))
 				# arguments, locals, statics, in_scope_only
 				for v in f.GetVariables(True, True, False, True):
-					print("name='%s' loc='%s' val='%s' type='%s' (%d)" % (
-						v.name, v.location, v.value, v.type.name, v.type.size))
+					print("'%s' l='%s' v='%s' t=%s(%d)" % (
+						v.name, v.location, v.value,
+						v.type.name, v.type.size))
+
+	def printPointersFromStack(self, n):
+		t = self.process.GetThreadByIndexID(n)
+		if not t.IsValid():
+			raise Exception("No thread %d" % n)
+		self.printStackInfo(t)
+		sp = t.frames[0].sp
+		reg = lldb.SBMemoryRegionInfo()
+		check(self.process.GetMemoryRegionInfo(sp, reg))
+		if self.args.threadm:
+			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
+				reg.GetRegionBase(), reg.GetRegionEnd()))
+		else:
+			for pos in range(
+					reg.GetRegionBase(), reg.GetRegionEnd(), ptrSize):
+				self.printPointerAt(pos)
+
+	def printPointerAt(self, pos):
+		p = self.check(self.process.ReadPointerFromMemory(pos, self.error))
+		self.printPointer(pos, "%x: " % pos, p)
+
+	def printPointer(self, pos, prefix, p):
+		addr = lldb.SBAddress(p, self.target)
+		sys.stdout.write("%s%016x %s %s" % (
+			prefix, p, self.getName(addr.module),
+			addr.symbol.name or (
+				addr.section.name and "sect %s" % addr.section.name) or (
+					self.getAscii(pos, ptrSize)) or ""))
+		sys.stdout.flush()
+		for s in self.getPossibleSourceLines(addr, " at %s:%d"):
+			sys.stdout.write(s)
+			sys.stdout.flush()
+		sys.stdout.write("\n")
+		block = addr.block
+		count = 0
+		while block.IsValid():
+			if block.GetInlinedCallSiteFile().IsValid():
+				for p in self.getPossibleSourceLines2(
+						block.GetInlinedCallSiteFile(),
+						block.GetInlinedCallSiteLine(), "at %s:%d"):
+					print("block %d: %s %s" % (
+						count, block.GetInlinedName(), p))
+			block = block.GetParent()
+			count += 1
+			
+
+	def getAscii(self, pos, size):
+		seq = self.check(self.process.ReadMemory(pos, size, self.error))
+		for b in seq:
+			if b == 0:
+				return ""
+		return seq.decode("windows-1251")
+		seq = self.check(
+			self.process.ReadCStringFromMemory(pos, size, self.error))
+		if len.seq < size:
+			return ""
+		return seq
+
+	def doCmd(self, cmd):
+		self.verb("cmd: '%s'\n" % cmd)
+		self.debugger.HandleCommand(cmd)
 
 	def printRegions(self):
 		regions = self.process.GetMemoryRegions()
@@ -202,7 +309,8 @@ class Target(Util):
 			parts = path.split("/")
 			if len(parts) > 1:
 				name = "/%s/.../%s" % (parts[1], parts[-1])
-				if m.file.fullpath.startswith(self.args.storage):
+				if self.args.storage and\
+				   m.file.fullpath.startswith(self.args.storage):
 					count.store += 1
 					name = m.file.fullpath
 				elif parts[1] in ["Volumes", "Applications"]:
@@ -413,6 +521,9 @@ class Tool(Util):
 	def handleTarget(self, t):
 		if self.args.download:
 			self.work += t.queueDownloadSymbols(Server(self.args))
+		elif self.args.threadn or self.args.threadm:
+			t.printPointersFromStack(
+				int(self.args.threadn or self.args.threadm, 10))
 		elif self.args.threads:
 			t.printStacks()
 		elif self.args.modules or self.args.absent:
@@ -444,6 +555,11 @@ if __name__ == "__main__":
 		"-n", "--attachname", help="Attach to a live process by name")
 	parser.add_argument(
 		"-t", "--threads", action="store_true", help="Print stacks")
+	parser.add_argument(
+		"-y", "--threadn", help="Print all entries from stack N")
+	parser.add_argument(
+		"-Y", "--threadm",
+		help="Print all entries from stack N using `memory read -fA`")
 	parser.add_argument("-v", "--verbose", action="store_true")
 	parser.add_argument(
 		"-b", "--dverbose", action="store_true", help="LLDB verbose output")
