@@ -1,7 +1,13 @@
 #!/usr/bin/env python
 from __future__ import print_function
 "Trace function calls & print stacks"
-import argparse, re, sys, os, subprocess, json
+import argparse, re, sys, os, subprocess, json, fnmatch
+try:
+	import lldb
+except ImportError:
+	if sys.platform.startswith("linux"):
+		sys.path.append(
+			"/usr/lib/python2.7/dist-packages/lldb-3.8")
 import lldb
 
 psize = 8
@@ -44,7 +50,7 @@ class TracePoint:
 		if len(ff) == 0:
 			return 0
 		if len(ff) != 1:
-			raise Exception("TODO")
+			raise Exception("%d functions" % len(ff))
 		if not ff[0].IsValid():
 			raise Exception("not ff[0].IsValid()")
 		if not ff[0].symbol.IsValid():
@@ -57,23 +63,73 @@ class TracePoint:
 		# load_addr doesn't work bc target is not "current"
 		return ff[0].symbol.addr.GetLoadAddress(target)
 
-
 class NamedTracePoint(TracePoint):
 	def __init__(self, name, addr=None):
-		self.command = None
-		parts = name.split(",")
+		self.addr = addr
+		self.commands = []
+		self.filters = []
+		parts = name.split("#")
 		if len(parts) > 1:
 			name = parts[0]
-			self.command = parts[1]
-		self.symbolName = name
-		self.addr = addr
+			self.commands = parts[1:]
+		parts = name.split("@")
+		if len(parts) > 1:
+			name = parts[0]
+			self.filters = parts[1:]
+		if name.startswith("0x"):
+			self.addr = int(name, 16)
+			return
+		self.nameIsFull = not name.startswith("~")
+		if self.nameIsFull:
+			self.symbolName = name
+		else:
+			self.symbolName = name[1:]
 
 	def getAddr(self, target, process):
-		return self.addr
+		if self.addr:
+			return self.addr
+		if self.nameIsFull:
+			return self.getAddrOf(self.symbolName, target)
+		return None
+
+	def substCommand(self, frame, cmd):
+		"'memory read $rxx' is broken if DWARF is broken"
+		def getReg(match):
+			return "0x%x" % (
+				frame.reg[match.group(1)].GetValueAsUnsigned())
+		return re.sub(r"\$\$([a-z]{3})", getReg, cmd)
+
+	def runScript(self, frame, cmd):
+		c = compile(cmd, cmd, "single")
+		error = lldb.SBError()
+		# Somehow eval gets r printed by itself (???)
+		r = eval(c, {}, dict(
+			f=frame, p=frame.thread.process, e=error, z=print))
+		# print("result: %s" % r)
 
 	def trace2(self, frame, toolProc):
-		if self.command:
-			toolProc.debugger.HandleCommand(self.command)
+		for filter in self.filters:
+			found = None
+			for f in frame.thread.frames:
+				if f.addr.symbol.name and\
+				   fnmatch.fnmatch(f.addr.symbol.name, filter) or\
+				   f.module.file.basename and\
+				   fnmatch.fnmatch(f.module.file.basename, filter):
+					found = f
+					break
+			if not found:
+				return
+		toolProc.printStack(frame)
+		if self.commands:
+			toolProc.process.SetSelectedThread(frame.thread)
+			for cmd in self.commands:
+				c2 = self.substCommand(frame, cmd)
+				if 1 or c2 != cmd:
+					sys.stdout.write("%s= " % c2)
+				if c2.startswith("p.") or c2.startswith("print("):
+					self.runScript(frame, c2)
+				else:
+					toolProc.debugger.HandleCommand(c2)
 		else:
 			sys.stdout.write("trace '%s'\n" % self.symbolName)
 	
@@ -109,6 +165,10 @@ class SSLReadTrace(TracePoint):
 		hexDumpMem(process, buf, buf + size, error)
 
 
+class Count:
+	def __init__(self):
+		self.stopped = 0
+
 class Process:
 	objects = {}
 	
@@ -119,21 +179,35 @@ class Process:
 		self.breakpoints = {}
 		self.lastPrintedStack = []
 		self.stacksEnabled = True
+		self.printImage = False
+		self.count = Count()
+		if self.options.verbose:
+			if not self.debugger.EnableLog("lldb", ["dyld", "target"]):
+				raise Exception("Bad log")
 
-	def load(self, pid):
-		self.target = self.debugger.CreateTarget(
-			"", "", "", True, self.error)
-		if not self.target:
+	def check(self, result):
+		if self.error.fail:
 			raise Exception(str(self.error))
-		if re.match(r"\d+", pid):
+		return result
+
+	def load(self, pid=None, launch=None):
+		self.target = self.check(self.debugger.CreateTarget(
+			launch and launch[0] or "", "", "", True, self.error))
+		if launch:
+			sys.stderr.write("Launching %s..." % launch)
+			self.process = self.check(self.target.Launch(
+				self.debugger.GetListener(),
+				launch[1:],
+				None, None, None, None, os.getcwd(),
+				0, True, self.error));
+		elif re.match(r"\d+", pid):
 			ai = lldb.SBAttachInfo(int(pid))
 			sys.stderr.write("Attaching pid=%d..." % ai.GetProcessID())
 		else:
 			ai = lldb.SBAttachInfo(pid, False)
 			sys.stderr.write("Attaching name='%s'..." % pid)
-		self.process = self.target.Attach(ai, self.error)
-		if not self.process:
-			raise Exception(str(self.error))
+		if not launch:
+			self.process = self.check(self.target.Attach(ai, self.error))
 		sys.stderr.write("Done\n")
 		Process.objects[self.process.id] = self
 		return self
@@ -146,34 +220,53 @@ class Process:
 		self.debugger.DeleteTarget(self.target)
 		sys.stderr.write("Done\n")
 
+	def printStack(self, frame):
+		if not self.stacksEnabled:
+			return
+		skipStart = None
+		for i in range(frame.thread.GetNumFrames()):
+			idx = frame.thread.GetNumFrames() - i - 1
+			f = frame.thread.frames[idx]
+			if i + 1 < len(self.lastPrintedStack) and\
+			   f.addr == self.lastPrintedStack[i].addr and\
+		   	   idx > 0 and\
+   			   frame.thread.frames[idx - 1].addr ==\
+   			   self.lastPrintedStack[i + 1].addr:
+   				skipStart = skipStart or f
+   				continue
+   			if skipStart:
+   				head = "%d-%d" % (skipStart.idx, f.idx)
+   				skipStart = None
+   			else:
+   				head = "%d" % f.idx
+			sl = self.getSourceLine(f, " at %s:%d")
+			name = f.addr.symbol.name
+			if sl:
+				name = name.split("(")[0]
+   			print("\r%7s %16x %s%s" % (
+   				head, f.addr.GetLoadAddress(self.target),
+   				self.printImage and (f.module.file.basename + " ") or "",
+   				name) + sl)
+   		self.lastPrintedStack = frame.thread.frames[::-1]
+
+	def getSourceLine(self, f, template):
+		if not f.line_entry.IsValid():
+			return ""
+		cwd = os.getcwd().split(os.sep)[-1]
+		parts = f.line_entry.file.fullpath.split(os.sep)
+		try:
+			path = os.sep.join(parts[parts.index(cwd) + 1:])
+		except ValueError:
+			path = f.line_entry.file.fullpath
+		return template % (path, f.line_entry.line)
+			
 	def handleBreakpoint(self, frame, bp_loc):
-		if self.stacksEnabled:
-			skipStart = None
-			for i in range(frame.thread.GetNumFrames()):
-				idx = frame.thread.GetNumFrames() - i - 1
-				f = frame.thread.frames[idx]
-				if i + 1 < len(self.lastPrintedStack) and\
-				   f.addr == self.lastPrintedStack[i].addr and\
-				   idx > 0 and\
-				   frame.thread.frames[idx - 1].addr ==\
-				   self.lastPrintedStack[i + 1].addr:
-					skipStart = skipStart or f
-					continue
-				if skipStart:
-					head = "%d-%d" % (skipStart.idx, f.idx)
-					skipStart = None
-				else:
-					head = "%d" % f.idx
-				print("\r%7s %16x %s %s" % (
-					head, f.addr.GetLoadAddress(self.target),
-					f.module.file.basename,
-					f.addr.symbol.name))
-			self.lastPrintedStack = frame.thread.frames[::-1]
 		tr = self.breakpoints.get(frame.pc) or\
 			self.breakpoints[frame.name]
 		if hasattr(tr, "trace2"):
 			tr.trace2(frame, self)
 		else:
+			self.printStack(frame)
 			tr.trace(frame, self.process, self.error)
 
 	def traceSsl(self):
@@ -219,8 +312,9 @@ class Process:
 			raise Exception(str(self.error))
 		ev = lldb.SBEvent()
 		while True:
-			sys.stderr.write("Waiting...")
-			if 1:
+			sys.stderr.write("\rWaiting (stopped=%d)..." % (
+				self.count.stopped))
+			if 0:
 				if not self.listener.WaitForEvent(lldb.UINT32_MAX, ev):
 					raise Exception("timeout lldb.UINT32_MAX achieved???")
 			# timeout to catch SIGINT 
@@ -228,8 +322,12 @@ class Process:
 				pass
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
+				self.count.stopped += 1
 				self.process.Continue()
+			elif state == lldb.eStateRunning:
+				pass
 			elif state == lldb.eStateExited:
+				sys.stderr.write("exited...")
 				break
 			else:
 				sys.stderr.write(
@@ -272,22 +370,37 @@ class Tool:
 			tid = int(self.options.tid)
 		if self.options.with_dtrace:
 			return self.collectProcesses()
-		process = Process(self.options).load(self.options.PID)
+		pid = self.options.PID
+		functions = self.options.FUNCTION
+		launch = self.options.launch and self.options.launch.split(" ")
+		try:
+			i = functions.index("@")
+			functions = functions[:i]
+			launch = functions[:i + 1]
+		except ValueError:
+			pass
+		if functions and not launch:
+			pid = functions[-1]
+			functions = functions[:-1]
+		if not (pid or launch):
+			sys.stderr.write("Need PID or command\n")
+			sys.exit(1)
+		process = Process(self.options).load(pid, launch)
 		if self.options.tid:
 			try:
 				process.inspect(tid)
 			except Exception, e:
 				print("exception in inspect: %s" % e)
-			self.traceAll(process)
+			self.traceAll(process, functions)
 		elif self.options.list:
 			process.listDynSymbols()
 		else:
-			self.traceAll(process)
+			self.traceAll(process, functions)
 		process.unload()
 
-	def traceAll(self, process):
-		if self.options.FUNCTION:
-			for expr in self.options.FUNCTION:
+	def traceAll(self, process, functions):
+		if functions:
+			for expr in functions:
 				if expr.endswith(".dylib"):
 					process.breakAtEveryEntryPointOfModule(expr)
 				else:
@@ -325,7 +438,10 @@ parser.add_argument(
 	"-d", "--with-dtrace",
 	help="Use collecttcp.d with STOP set to WITH_DTRACE")
 parser.add_argument(
-	"-s", "--ssl", help="Trace SSL reads & writes")
-parser.add_argument("PID", nargs="?")
+	"-s", "--ssl", action="store_true", help="Trace SSL reads & writes")
+parser.add_argument(
+	"-r", "--launch", help="Launch command line with spaces")
+parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument("FUNCTION", nargs="*")
+parser.add_argument("PID", nargs="?")
 Tool(parser.parse_args()).run()
