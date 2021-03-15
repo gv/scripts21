@@ -323,6 +323,15 @@ next grep is started"
   (message "Char classes:@=%s" (string (char-syntax ?@))))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
 
+(defun vg-after-save ()
+  (when (and
+		 (string-equal mode-name "Emacs-Lisp")
+		 (not
+		  (string-match "/shoe.el$" buffer-file-name)))
+	(message "Saved %s & evaluating..." buffer-file-name)
+	(eval-buffer)))
+(add-hook 'after-save-hook 'vg-after-save)
+
 (if window-system
 	(global-set-key (kbd "M-[") 'gtags-find-rtag)
 )
@@ -406,6 +415,7 @@ next grep is started"
 	   (message "vc-refresh-state disabled"))
 (defun vc-after-save () "Disable"
 	   (message "vc-after-save disabled"))
+(setq fast-but-imprecise-scrolling t)
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
 

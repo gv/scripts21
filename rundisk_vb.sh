@@ -22,6 +22,7 @@ VBoxManage modifyvm "$name"\
 		   --firmware efi\
 		   --memory 1536 --acpi on --boot1 disk\
 		   --audio none --nic1 null --nictype1 virtio --mouse usbtablet\
+		   --cableconnected1 on\
 		   --ioapic on\
 		   --groups "/$(basename "$0")"\
 		   --description "Updated by $0 on $(date)"
