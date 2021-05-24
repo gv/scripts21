@@ -156,6 +156,9 @@
   (define-key global-map (kbd "s-`") 'next-multiframe-window)
   (define-key global-map (kbd "C-\\")
 	(lambda () (interactive) (message "Keyboard language switch disabled")))
+  ;; latvian keyboard workaround 
+  (define-key global-map (kbd "M-'")
+	(lambda () (interactive) (insert "`")))
   (let ((size 10) (i 0) name
 		(fonts ["Menlo" "Courier" "Monaco" "PT Mono" "Andale Mono"]))
 	(defun vg-update-font (ns ni)
