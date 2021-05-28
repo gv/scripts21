@@ -260,10 +260,10 @@
   (c-set-offset 'arglist-intro '+)
   (c-set-offset 'arglist-cont-nonempty '+)
   (c-set-offset 'arglist-close 0)
+  (c-set-offset 'innamespace 0)
   (abbrev-mode -1)
   (message
-   "C mode hook: tab-width=%d c-basic-offset=%d" tab-width c-basic-offset)
-  )
+   "C mode hook: tab-width=%d c-basic-offset=%d" tab-width c-basic-offset))
 (add-hook 'c-mode-common-hook 'vg-tune-c)
 (add-hook 'js-mode-hook 'vg-tune-c)
 
