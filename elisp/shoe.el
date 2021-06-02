@@ -144,6 +144,8 @@
  (define-key global-map (kbd "s-]") 'forward-sexp)
   (define-key global-map [M-up] 'backward-paragraph)
   (define-key global-map [M-down] 'forward-paragraph)
+  (define-key global-map [s-home] 'beginning-of-buffer)
+  (define-key global-map [s-end] 'end-of-buffer)
   (define-key global-map [s-up] 'previous-error)
   (define-key global-map [s-down] 'next-error)
   (define-key global-map [M-s-up] 'pop-tag-mark)
