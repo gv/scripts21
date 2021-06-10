@@ -1,6 +1,8 @@
 ;; Eval before cursor is C-x C-e -*-lexical-binding: t-*-
 
 (message "Trying to load init.el by vg...")
+(defun vg-message (fmt &rest args)
+  (apply 'message (propertize fmt 'face '(:background "#A0FFA0")) args))
 (setq force-load-messages t)
 
 ;;
@@ -133,7 +135,7 @@
   (define-key osx-key-mode-map `[(meta v)] 'cua-paste)
   (define-key osx-key-mode-map `[(,osxkeys-command-key i)] 'test)
   (define-key osx-key-mode-map (kbd "A-;")
-	(lambda () (interactive) (message "Spell check disabled")))
+	(lambda () (interactive) (vg-message "Spell check disabled")))
   ;; latvian keyboard workaround 
   (define-key osx-key-mode-map (kbd "M-'")
 	(lambda () (interactive) (insert "`")))
@@ -157,7 +159,7 @@
   (define-key global-map (kbd "s-/") 'dabbrev-expand)
   (define-key global-map (kbd "s-`") 'next-multiframe-window)
   (define-key global-map (kbd "C-\\")
-	(lambda () (interactive) (message "Keyboard language switch disabled")))
+	(lambda () (interactive) (vg-message "Keyboard language switch disabled")))
   ;; latvian keyboard workaround 
   (define-key global-map (kbd "M-'")
 	(lambda () (interactive) (insert "`")))
@@ -167,7 +169,7 @@
 	  (setq size ns i (% ni (length fonts)))
 	  (setq name (format "%s-%d" (aref fonts i) size))
 	  (set-frame-font name t)
-	  (message "Font: %s" name))
+	  (vg-message "Font: %s" name))
 	(define-key global-map (kbd "s-=")
 	  (lambda () (interactive) (vg-update-font (+ 1 size) i)))
 	(define-key global-map (kbd "s--")
@@ -247,7 +249,8 @@
 (prog1
   (load "../compact-blame/compact-blame.el")
   (setq compact-blame-bg1 "rainbow")
-  (setq compact-blame-bg2 "rainbow"))
+  (setq compact-blame-bg2 "rainbow")
+  (setq compact-blame-format "%Y%0%.%#"))
 
 ;; for ViewSourceWith Firefox extension
 ;;(add-to-list 'auto-mode-alist '("index.\\.*" . wikipedia-mode))
@@ -264,7 +267,7 @@
   (c-set-offset 'arglist-close 0)
   (c-set-offset 'innamespace 0)
   (abbrev-mode -1)
-  (message
+  (vg-message
    "C mode hook: tab-width=%d c-basic-offset=%d" tab-width c-basic-offset))
 (add-hook 'c-mode-common-hook 'vg-tune-c)
 (add-hook 'js-mode-hook 'vg-tune-c)
@@ -272,7 +275,7 @@
 (defun my-javascript-mode-hook ()
   (setq indent-tabs-mode t tab-width 4 js-indent-level 4)
   (modify-syntax-entry ?` "\"")
-  (message "JS mode template strings enabled")
+  (vg-message "JS mode template strings enabled")
   )
 (add-hook 'js-mode-hook 'my-javascript-mode-hook)
 
@@ -296,9 +299,9 @@
 
 (defun tune-dabbrev ()
   (modify-syntax-entry ?/ ".")
-  (message "Char syntax: /=%s" (string (char-syntax ?/)))
+  (vg-message "Char syntax: /=%s" (string (char-syntax ?/)))
   ;;(set (make-local-variable 'dabbrev-abbrev-char-regexp) "[A-Za-z0-9_]")
-  ;;(message "dabbrev-abbrev-char-regexp set to '%s'" dabbrev-abbrev-char-regexp)
+  ;;(vg-message "dabbrev-abbrev-char-regexp set to '%s'" dabbrev-abbrev-char-regexp)
   )
 
 (add-hook 'sh-mode-hook 'tune-dabbrev)
@@ -316,16 +319,16 @@ next grep is started"
    (get-buffer-process (current-buffer)) nil)
   ;; get '-' character out of "symbol" class
   (modify-syntax-entry ?- ".")
-  (message "Char classes:-=%s" (string (char-syntax ?-))))
+  (vg-message "Char classes:-=%s" (string (char-syntax ?-))))
 (add-hook 'compilation-start-hook 'vg-tune-compilation)
 
 (defun vg-tune-log-view ()
-  (message "truncate-lines=%s" (setq truncate-lines nil)))
+  (vg-message "truncate-lines=%s" (setq truncate-lines nil)))
 (add-hook 'log-view-mode-hook 'vg-tune-log-view)
 
 (defun vg-tune-lisp ()
   (modify-syntax-entry ?@ ".")
-  (message "Char classes:@=%s" (string (char-syntax ?@))))
+  (vg-message "Char classes:@=%s" (string (char-syntax ?@))))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
 
 (defun vg-after-save ()
@@ -333,7 +336,7 @@ next grep is started"
 		 (string-equal mode-name "Emacs-Lisp")
 		 (not
 		  (string-match "/shoe.el$" buffer-file-name)))
-	(message "Saved %s & evaluating..." buffer-file-name)
+	(vg-message "Saved %s & evaluating..." buffer-file-name)
 	(eval-buffer)))
 (add-hook 'after-save-hook 'vg-after-save)
 
@@ -417,9 +420,9 @@ next grep is started"
 (add-hook 'after-save-hook 'executable-make-buffer-file-executable-if-script-p)
 ;; remove git info from mode line
 (defun vc-refresh-state () "Disable"
-	   (message "vc-refresh-state disabled"))
+	   (vg-message "vc-refresh-state disabled"))
 (defun vc-after-save () "Disable"
-	   (message "vc-after-save disabled"))
+	   (vg-message "Wrote %s (vc-after-save disabled)" buffer-file-name))
 (setq fast-but-imprecise-scrolling t)
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
