@@ -402,7 +402,7 @@ next grep is started"
 
 (server-start)
 (setenv
- "EDITOR" "/Volumes/aux_apps/Emacs.app/Contents/MacOS/bin/emacsclient")
+ "EDITOR" (expand-file-name "bin/emacsclient" invocation-directory))
 (setenv "GREP_OPTIONS" "--recursive --binary-files=without-match")
 (setenv "PAGER" "cat")
 (setq-default case-fold-search nil case-replace nil
