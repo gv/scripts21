@@ -22,7 +22,7 @@ rows = [
     Row(57, " ", ""),
 ]
 
-class Tool:
+class VbKeys:
     def __init__(self, args):
         self.args = args
         self.vmName = self.args.machine
@@ -42,7 +42,7 @@ class Tool:
         return self
 
     def run(self):
-        if not self.vmName:
+        if not self.vmName and not self.args.qemu:
             rvms = subprocess.check_output([
                 "VBoxManage", "list", "runningvms"]).strip().split("\n")
             if len(rvms) != 1:
@@ -71,7 +71,36 @@ class Tool:
                 return
         raise Exception("Character '%s' not found" % c)
 
+class QemuCommands(VbKeys):
+	# TODO incomplete
+	names = {
+		"\n": "ret",
+		"=": "equal",
+		" ": "spc",
+		".": "dot",
+		",": "comma",
+		"/": "slash",
+		"-": "minus"
+	}
+		
+	def __init__(self, args):
+		self.args = args
+		self.vmName = self.shift = None
+
+	def sendChar(self, c):
+		print("sendkey %s" % self.names.get(c, c))
+
+	def setModifier(self, mod, target):
+		pass
+
+def Tool(args):
+	if args.qemu:
+		return QemuCommands(args)
+	return VbKeys(args)
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("-m", "--machine", help="Target machine")
+parser.add_argument(
+	"-q", "--qemu", action="store_true", help="Print QEMU commands instead")
 parser.add_argument("INPUT", nargs="+")
 Tool(parser.parse_args()).run()
