@@ -1,4 +1,4 @@
-;; Eval before cursor is C-x C-e -*-lexical-binding: t-*-
+;; Eval before cursor is C-x C-e -*-lexical-binding: t; lisp-indent-offset: 1-*-
 
 (message "Trying to load init.el by vg...")
 (defun vg-message (fmt &rest args)
@@ -159,7 +159,8 @@
   (define-key global-map (kbd "s-/") 'dabbrev-expand)
   (define-key global-map (kbd "s-`") 'next-multiframe-window)
   (define-key global-map (kbd "C-\\")
-	(lambda () (interactive) (vg-message "Keyboard language switch disabled")))
+   (lambda () (interactive) (vg-message "Keyboard language switch disabled")))
+ (define-key global-map (kbd "s-g") 'google-at-point)
   ;; latvian keyboard workaround 
   (define-key global-map (kbd "M-'")
 	(lambda () (interactive) (insert "`")))
@@ -186,6 +187,11 @@
 
 (defun ft-other-window-at-point () "Set other window to def" (interactive)
 	   (find-tag-other-window (find-tag-default)))
+
+(defun google-at-point () (interactive)
+ (let ((q (find-tag-default)))
+  (call-process "open" nil "*Messages*" t
+   (format "https://www.google.com/search?q=%s" q))))
 ;;
 ;;    APPEARANCE
 ;;    ``````````
@@ -393,6 +399,7 @@ next grep is started"
 
 (defalias 'yes-or-no-p 'y-or-n-p)
 (defalias 'c 'compile)
+(defalias 'bc 'emacs-lisp-byte-compile-and-load)
 (defalias 'cbm 'compact-blame-mode)
 (defalias 'gl 'git-log)
 (defun vtt () (interactive)

@@ -1,13 +1,17 @@
 #!/usr/bin/env python
 from __future__ import print_function
 "Trace function calls & print stacks"
-import argparse, re, sys, os, subprocess, json, fnmatch
+import argparse, re, sys, os, subprocess, json, fnmatch, struct
 try:
 	import lldb
 except ImportError:
 	if sys.platform.startswith("linux"):
 		sys.path.append(
 			"/usr/lib/python2.7/dist-packages/lldb-3.8")
+	else:
+		sys.path.append("\
+/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/\
+Resources/Python")
 import lldb
 
 psize = 8
@@ -43,8 +47,13 @@ def callProcessHandleBp(frame, bp_loc, dict):
 		frame.addr, frame.pc, frame.sp, ["%X" % t for t in args]))
 	hexDumpMem(process, args[1], args[1] + args[2], error)
 
+class Util:
+	def check(self, result):
+		if self.error.fail:
+			raise Exception(str(self.error))
+		return result
 
-class TracePoint:
+class TracePoint(Util):
 	def getAddrOf(self, name, target):
 		ff = target.FindFunctions(name)
 		if len(ff) == 0:
@@ -62,6 +71,13 @@ class TracePoint:
 			raise Exception("not ff[0].symbol.addr.IsValid()")
 		# load_addr doesn't work bc target is not "current"
 		return ff[0].symbol.addr.GetLoadAddress(target)
+
+	def getAddr(self, target, process):
+		if self.addr:
+			return self.addr
+		if self.nameIsFull:
+			return self.getAddrOf(self.symbolName, target)
+		return None
 
 class NamedTracePoint(TracePoint):
 	def __init__(self, name, addr=None):
@@ -84,13 +100,6 @@ class NamedTracePoint(TracePoint):
 			self.symbolName = name
 		else:
 			self.symbolName = name[1:]
-
-	def getAddr(self, target, process):
-		if self.addr:
-			return self.addr
-		if self.nameIsFull:
-			return self.getAddrOf(self.symbolName, target)
-		return None
 
 	def substCommand(self, frame, cmd):
 		"'memory read $rxx' is broken if DWARF is broken"
@@ -119,7 +128,8 @@ class NamedTracePoint(TracePoint):
 					break
 			if not found:
 				return
-		toolProc.printStack(frame)
+		if not self.commands:
+			toolProc.printStack(frame)
 		if self.commands:
 			toolProc.process.SetSelectedThread(frame.thread)
 			for cmd in self.commands:
@@ -132,6 +142,14 @@ class NamedTracePoint(TracePoint):
 					toolProc.debugger.HandleCommand(c2)
 		else:
 			sys.stdout.write("trace '%s'\n" % self.symbolName)
+
+class RetTracePoint(NamedTracePoint):
+	def trace2(self, frame, toolProc):
+		toolProc.addTask(frame.sp + psize, self)
+		frame.thread.StepOut()
+
+	def runDeferredTask(self, toolProc, frame):
+		NamedTracePoint.trace2(self, frame, toolProc)
 	
 
 class SSLWriteTrace(TracePoint):
@@ -164,12 +182,80 @@ class SSLReadTrace(TracePoint):
 		print("read %d bytes:" % size)
 		hexDumpMem(process, buf, buf + size, error)
 
+class NSEvent(Util):
+	types = dict(
+	    NSEventTypeLeftMouseDown             = 1,
+		NSEventTypeLeftMouseUp               = 2,
+		NSEventTypeRightMouseDown            = 3,
+		NSEventTypeRightMouseUp              = 4,
+		NSEventTypeMouseMoved                = 5,
+		NSEventTypeLeftMouseDragged          = 6,
+		NSEventTypeRightMouseDragged         = 7,
+		NSEventTypeMouseEntered              = 8,
+		NSEventTypeMouseExited               = 9,
+		NSEventTypeKeyDown                   = 10,
+		NSEventTypeKeyUp                     = 11,
+		NSEventTypeFlagsChanged              = 12,
+		NSEventTypeAppKitDefined             = 13,
+		NSEventTypeSystemDefined             = 14,
+		NSEventTypeApplicationDefined        = 15,
+		NSEventTypePeriodic                  = 16,
+		NSEventTypeCursorUpdate              = 17,
+		NSEventTypeScrollWheel               = 22,
+		NSEventTypeTabletPoint               = 23,
+		NSEventTypeTabletProximity           = 24,
+		NSEventTypeOtherMouseDown            = 25,
+		NSEventTypeOtherMouseUp              = 26,
+		NSEventTypeOtherMouseDragged         = 27,
+		NSEventTypeGesture        = 29,
+		NSEventTypeMagnify        = 30,
+		NSEventTypeSwipe          = 31,
+		NSEventTypeRotate         = 18,
+		NSEventTypeBeginGesture   = 19,
+		NSEventTypeEndGesture     = 20,
+		NSEventTypeSmartMagnify  = 32,
+		NSEventTypeQuickLook  = 33,
+		NSEventTypePressure  = 34,
+		NSEventTypeDirectTouch  = 37)
+
+	rtypes = {v: k for k, v in types.items()}
+
+	def __init__(self, addr, process):
+		self.error = lldb.SBError()
+		mem = self.check(process.ReadMemory(addr, 0x20, self.error))
+		_, self.type, self.x, self.y = struct.unpack("QQdd", mem)
+
+	def getTypeName(self):
+		return self.rtypes.get(self.type, "type%d" % self.type)
+
+class HandleEventCall:
+	def __init__(self, frame):
+		self.name = frame.addr.symbol.name
+		self.pself = frame.reg["rdi"].GetValueAsUnsigned()
+		self.pev = frame.reg["rdx"].GetValueAsUnsigned()
+		self.ev = NSEvent(self.pev, frame.thread.process)
+
+	def runDeferredTask(self, toolProc, frame):
+		r = frame.reg["rax"].GetValueAsUnsigned()
+		print(" x=%d y=%d r=%X %s %s" % (
+			self.ev.x, self.ev.y, r, self.ev.getTypeName(), self.name))
+
+class HandleEventTrace(TracePoint):
+	def __init__(self, addr):
+		self.addr = addr
+		self.error = lldb.SBError()
+
+	def trace2(self, frame, toolProc):
+		call = HandleEventCall(frame)
+		toolProc.addTask(frame.sp + psize, call)
+		frame.thread.StepOut()
+		
 
 class Count:
 	def __init__(self):
 		self.stopped = 0
 
-class Process:
+class Process(Util):
 	objects = {}
 	
 	def __init__(self, options):
@@ -184,11 +270,12 @@ class Process:
 		if self.options.verbose:
 			if not self.debugger.EnableLog("lldb", ["dyld", "target"]):
 				raise Exception("Bad log")
+		self.tasksBySp = {}
 
-	def check(self, result):
-		if self.error.fail:
-			raise Exception(str(self.error))
-		return result
+	def addTask(self, sp, task):
+		if sp in self.tasksBySp:
+			raise Exception("%X already here!" % sp)
+		self.tasksBySp[sp] = task
 
 	def load(self, pid=None, launch=None):
 		self.target = self.check(self.debugger.CreateTarget(
@@ -323,6 +410,10 @@ class Process:
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
 				self.count.stopped += 1
+				frame = self.process.selected_thread.GetFrameAtIndex(0)
+				if frame.sp in self.tasksBySp:
+					self.tasksBySp[frame.sp].runDeferredTask(self, frame)
+					del self.tasksBySp[frame.sp]
 				self.process.Continue()
 			elif state == lldb.eStateRunning:
 				pass
@@ -342,12 +433,18 @@ class Process:
 				self.setBp(NamedTracePoint(
 					s.name, s.addr.GetLoadAddress(self.target)))
 			
-	def listDynSymbols(self):
+	def listSymbols(self, includeNonDynamic):
 		for m in self.target.modules:
 			for s in m:
-				if s.external:
+				if includeNonDynamic or s.external:
 					print("%s %s %s" % (
 						m.file.fullpath, s.name, s.addr))
+
+	def setHandleEventBreakpoints(self):
+		for m in self.target.modules:
+			for s in m:
+				if s.name.endswith("handleEvent:]"):
+					self.setBp(HandleEventTrace(s.addr.GetLoadAddress(self.target)))
 
 	def inspect(self, tid):
 		print("process=%s" % self.process)
@@ -393,28 +490,33 @@ class Tool:
 				print("exception in inspect: %s" % e)
 			self.traceAll(process, functions)
 		elif self.options.list:
-			process.listDynSymbols()
+			process.listSymbols(False)
+		elif self.options.list2:
+			process.listSymbols(True)
 		else:
 			self.traceAll(process, functions)
 		process.unload()
 
 	def traceAll(self, process, functions):
-		if functions:
-			for expr in functions:
-				if expr.endswith(".dylib"):
-					process.breakAtEveryEntryPointOfModule(expr)
-				else:
-					process.setBp(NamedTracePoint(expr))
-			process.runTrace()
-		else:
-			process.traceSsl()
+		if self.options.ssl:
+			return process.traceSsl()
+		for expr in functions:
+			if expr.endswith(".dylib"):
+				process.breakAtEveryEntryPointOfModule(expr)
+			elif expr.startswith("/"):
+				process.setBp(RetTracePoint(expr[1:]))
+			else:
+				process.setBp(NamedTracePoint(expr))
+		if self.options.events:
+			process.setHandleEventBreakpoints()
+		process.runTrace()
 
 	def collectProcesses(self):
 		command = [
 			"sudo", # "-S",
 			os.path.join(os.path.dirname(__file__), "collecttcp.d"),
 			"-DPRINT=1", "-DSTOP=\"%s\"" % self.options.with_dtrace]
-		print("Running %s...", json.dumps(" ".join(command)))
+		print("Running %s..." % json.dumps(" ".join(command)))
 		p = subprocess.Popen(
 			command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 		while p:
@@ -433,6 +535,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
 	"-l", "--list", action="store_true", help="List symbols in libs")
 parser.add_argument(
+	"-m", "--list2", action="store_true", help="List all symbols")
+parser.add_argument(
 	"-t", "--tid", help="Inspect thread TID")
 parser.add_argument(
 	"-d", "--with-dtrace",
@@ -441,6 +545,12 @@ parser.add_argument(
 	"-s", "--ssl", action="store_true", help="Trace SSL reads & writes")
 parser.add_argument(
 	"-r", "--launch", help="Launch command line with spaces")
+parser.add_argument(
+	"--events", action="store_true",
+	help="Trace handleEvent methods in every class and parse NSEvent structs")
+#parser.add_argument(
+#	"--nolib", action="store_true",
+#	help="Set BPs in main executable only")
 parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument("FUNCTION", nargs="*")
 parser.add_argument("PID", nargs="?")
