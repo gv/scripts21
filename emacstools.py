@@ -1,7 +1,17 @@
 #!/usr/bin/env python
 from __future__ import print_function
 "Emacs object & stack decoder"
-import sys, argparse, json, re
+import sys, argparse, json, re, struct
+try:
+	import lldb
+except ImportError:
+	if sys.platform.startswith("linux"):
+		sys.path.append(
+			"/usr/lib/python2.7/dist-packages/lldb-3.8")
+	else:
+		sys.path.append("\
+/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/\
+Resources/Python")
 import lldb
 
 psize = 8
@@ -40,12 +50,52 @@ def range64(begin, end, step):
 		yield begin
 		begin += step
 
+def check(error):
+   	if not error.success:
+   		raise Exception(str(error))
+
+class Util:
+	def check(self, result):
+		if self.error.fail:
+			raise Exception(str(self.error))
+		return result
+
+class LispObject:
+	def __init__(self, ptr, tool):
+		self.type = ptr & 7
+		self.addr = ptr - self.type
+		self.tool = tool
+		self.process = tool.process
+
+	def getTypeName(self):
+		return rtypes.get(self.type, "type%d" % self.type)
+
+	def getStringData(self, error):
+		size = self.tool.readUnpack(self.addr + 8, "q")
+		dataAddr = self.tool.readPointer(self.addr + 24)
+		if size < 0:
+			return self.process.ReadCStringFromMemory(dataAddr, 256, error)
+		else:
+			return self.process.ReadMemory(dataAddr, size, error)
+
+	def getSymbolNamePointer(self):
+		p2 = self.tool.symbolBase + self.addr
+		return self.tool.readPointer(p2 + 8)
+
+	def isSymbolName(self, s):
+		if self.type != types["Lisp_Symbol"]:
+			return False
+		name = LispObject(self.getSymbolNamePointer(), self.tool)
+		if name.type != types["Lisp_String"]:
+			return False
+		return name.getStringData(lldb.SBError()) == s
+
 class Count:
 	def __init__(self):
 		self.occurence = 0
 		self.match = 0
 
-class StackDecoder:
+class StackDecoder(Util):
 	def __init__(self, debugger, options=None):
 		self.debugger, self.options = debugger, options
 		self.error = lldb.SBError()
@@ -71,7 +121,7 @@ class StackDecoder:
 			self.trace()
 		# Destroy() is necessary to not SEGV at exit
 		# the rest maybe not
-		self.check(self.process.Detach())
+		check(self.process.Detach())
 		self.debugger.DeleteTarget(self.target)
 		lldb.SBDebugger.Destroy(self.debugger)
 
@@ -93,13 +143,10 @@ class StackDecoder:
 			contexts[0].symbol.addr.module))
 		return self
 
-	def check(self, error):
-		if not error.success:
-			raise Exception(str(error))
-
 	def trace(self):
 		b = self.target.BreakpointCreateByName("Ffuncall")
 		b.SetScriptCallbackFunction("StackDecoder.obj.handleBreakpoint")
+		self.runProcess()
 
 	def traceFunction(self, fn):
 		self.setBreakpoint(fn, "StackDecoder.obj.printStack")
@@ -116,15 +163,16 @@ class StackDecoder:
 		self.process.GetBroadcaster().AddListener(
 			listener, lldb.SBProcess.eBroadcastBitStateChanged |
 			lldb.SBProcess.eBroadcastBitInterrupt)
-		self.check(self.process.Continue())
+		check(self.process.Continue())
 		ev = lldb.SBEvent()
 		while True:
-			sys.stderr.write("Waiting...")
-			if not listener.WaitForEvent(lldb.UINT32_MAX, ev):
-				raise Exception("TODO")
+			sys.stderr.write("\rWaiting...")
+			# timeout to catch SIGINT 
+			while not listener.WaitForEvent(1, ev):
+				pass
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
-				self.check(self.process.Continue())
+				check(self.process.Continue())
 				continue
 			if state == lldb.eStateRunning:
 				continue
@@ -136,7 +184,16 @@ class StackDecoder:
 	def handleBreakpoint(self, frame, bp_loc, dict):
 		length, objects = [
 			frame.reg[n].GetValueAsUnsigned() for n in ["rdi", "rsi"]]
-		print(self.describeArgs(objects, length))
+		if not self.options.LISPFUNCTIONS:
+			print(self.describeArgs(objects, length))
+			return
+		if length == 0:
+			return
+		func = LispObject(self.readPointer(objects), self)
+		for f in self.options.LISPFUNCTIONS:
+			if func.isSymbolName(f):
+				print(self.describeArgs(objects, length))
+				break
 
 	def printStack_(self, frame, bp_loc, dict):
 		thread = frame.GetThread()
@@ -217,27 +274,27 @@ class StackDecoder:
 		#	for p in range64(objects, objects + length * psize, psize)])
 
 	def readPointer(self, addr):
-		p = self.process.ReadPointerFromMemory(addr, self.error)
-		self.check(self.error)
+		if 0:
+			p = self.process.ReadPointerFromMemory(addr, self.error)
+			check(self.error)
+		else:
+			return self.readUnpack(addr, "Q")
 		return p
 
+	def readUnpack(self, addr, format):
+		s = self.check(self.process.ReadMemory(addr, psize, self.error))
+		return struct.unpack(format, s)[0]
+
 	def describeObject(self, pointer, recursive=True):
-		typeId = 7 & pointer
-		type = rtypes.get(typeId)
-		if not type:
-			return "%016X(%d)" % (pointer, typeId)
+		o = LispObject(pointer, self)
+		type = o.getTypeName()
 		if "Lisp_String" == type:
-			p2 = pointer - typeId
-			size = self.readPointer(p2 + 8)
-			dataAddr = self.readPointer(p2 + 24)
-			data = self.process.ReadMemory(dataAddr, size, self.error)
+			data = o.getStringData(self.error)
 			if not self.error.success:
 				return "(size=%d %s)" % (size, self.error)
 			return json.dumps(data)
 		if recursive and "Lisp_Symbol" == type:
-			# typeId = 0
-			p2 = self.symbolBase + pointer
-			name = self.readPointer(p2 + 8)
+			name = o.getSymbolNamePointer()
 			return "'%s" % self.describeObject(name, False)
 		return "%016X(%s)" % (pointer, type)
 
@@ -305,5 +362,8 @@ def __lldb_init_module(debugger, internal_dict):
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description=__doc__)
-	parser.add_argument("-b", "--breakpoint", help="Set breakpoint at <name>")
+	parser.add_argument(
+		"-b", "--breakpoint", help="Set breakpoint at <name>")
+	parser.add_argument(
+		"LISPFUNCTIONS", nargs="*", help="Lisp function names to trace")
 	StackDecoder(lldb.SBDebugger.Create(), parser.parse_args()).run()

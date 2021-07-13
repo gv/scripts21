@@ -256,7 +256,7 @@
   (load "../compact-blame/compact-blame.el")
   (setq compact-blame-bg1 "rainbow")
   (setq compact-blame-bg2 "rainbow")
-  (setq compact-blame-format "%Y%0%.%#"))
+  (setq compact-blame-format "%Y%x%.%#"))
 
 ;; for ViewSourceWith Firefox extension
 ;;(add-to-list 'auto-mode-alist '("index.\\.*" . wikipedia-mode))
@@ -380,7 +380,8 @@ next grep is started"
 
 (defun git-log (options)
   "Print log with options"
-  (interactive "sGit log options: ")
+ (interactive "sGit log options: ")
+ (require 'vc)
   (let ((bn "*git-log*"))
 	(set-buffer (get-buffer-create bn))
 	(vc-setup-buffer bn)
@@ -410,7 +411,7 @@ next grep is started"
 (server-start)
 (setenv
  "EDITOR" (expand-file-name "bin/emacsclient" invocation-directory))
-(setenv "GREP_OPTIONS" "--recursive --binary-files=without-match")
+(setenv "GREP_OPTIONS" "--binary-files=without-match")
 (setenv "PAGER" "cat")
 (setq-default case-fold-search nil case-replace nil
 			  dabbrev-case-fold-search nil)
@@ -431,6 +432,7 @@ next grep is started"
 (defun vc-after-save () "Disable"
 	   (vg-message "Wrote %s (vc-after-save disabled)" buffer-file-name))
 (setq fast-but-imprecise-scrolling t)
+(grep-apply-setting 'grep-command "git grep -n ")
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
 

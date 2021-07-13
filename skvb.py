@@ -80,7 +80,9 @@ class QemuCommands(VbKeys):
 		".": "dot",
 		",": "comma",
 		"/": "slash",
-		"-": "minus"
+		"-": "minus",
+		":": "shift-semicolon",
+		"\\": "backslash"
 	}
 		
 	def __init__(self, args):
@@ -88,7 +90,10 @@ class QemuCommands(VbKeys):
 		self.vmName = self.shift = None
 
 	def sendChar(self, c):
-		print("sendkey %s" % self.names.get(c, c))
+		if c.lower() != c:
+			print("sendkey shift-%s" % c.lower())
+		else:
+			print("sendkey %s" % self.names.get(c, c))
 
 	def setModifier(self, mod, target):
 		pass
