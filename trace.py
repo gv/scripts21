@@ -7,7 +7,8 @@ try:
 except ImportError:
 	if sys.platform.startswith("linux"):
 		sys.path.append(
-			"/usr/lib/python2.7/dist-packages/lldb-3.8")
+			"/usr/lib64/python3.6/site-packages")
+#			"/usr/lib/python2.7/dist-packages/lldb-3.8")
 	else:
 		sys.path.append("\
 /Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/\
@@ -34,7 +35,7 @@ def hexDumpMem(process, start, end, error):
 
 def callProcessHandleBp2(frame, bp_loc, dict):
 	process = frame.GetThread().GetProcess()
-	# print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
+	print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
 	Process.objects[process.id].handleBreakpoint(frame, bp_loc)
 
 def callProcessHandleBp(frame, bp_loc, dict):
@@ -184,39 +185,39 @@ class SSLReadTrace(TracePoint):
 
 class NSEvent(Util):
 	types = dict(
-	    NSEventTypeLeftMouseDown             = 1,
-		NSEventTypeLeftMouseUp               = 2,
-		NSEventTypeRightMouseDown            = 3,
-		NSEventTypeRightMouseUp              = 4,
-		NSEventTypeMouseMoved                = 5,
-		NSEventTypeLeftMouseDragged          = 6,
-		NSEventTypeRightMouseDragged         = 7,
-		NSEventTypeMouseEntered              = 8,
-		NSEventTypeMouseExited               = 9,
-		NSEventTypeKeyDown                   = 10,
-		NSEventTypeKeyUp                     = 11,
-		NSEventTypeFlagsChanged              = 12,
-		NSEventTypeAppKitDefined             = 13,
-		NSEventTypeSystemDefined             = 14,
-		NSEventTypeApplicationDefined        = 15,
-		NSEventTypePeriodic                  = 16,
-		NSEventTypeCursorUpdate              = 17,
-		NSEventTypeScrollWheel               = 22,
-		NSEventTypeTabletPoint               = 23,
-		NSEventTypeTabletProximity           = 24,
-		NSEventTypeOtherMouseDown            = 25,
-		NSEventTypeOtherMouseUp              = 26,
-		NSEventTypeOtherMouseDragged         = 27,
-		NSEventTypeGesture        = 29,
-		NSEventTypeMagnify        = 30,
-		NSEventTypeSwipe          = 31,
-		NSEventTypeRotate         = 18,
-		NSEventTypeBeginGesture   = 19,
-		NSEventTypeEndGesture     = 20,
-		NSEventTypeSmartMagnify  = 32,
+		NSEventTypeLeftMouseDown			 = 1,
+		NSEventTypeLeftMouseUp				 = 2,
+		NSEventTypeRightMouseDown			 = 3,
+		NSEventTypeRightMouseUp				 = 4,
+		NSEventTypeMouseMoved				 = 5,
+		NSEventTypeLeftMouseDragged			 = 6,
+		NSEventTypeRightMouseDragged		 = 7,
+		NSEventTypeMouseEntered				 = 8,
+		NSEventTypeMouseExited				 = 9,
+		NSEventTypeKeyDown					 = 10,
+		NSEventTypeKeyUp					 = 11,
+		NSEventTypeFlagsChanged				 = 12,
+		NSEventTypeAppKitDefined			 = 13,
+		NSEventTypeSystemDefined			 = 14,
+		NSEventTypeApplicationDefined		 = 15,
+		NSEventTypePeriodic					 = 16,
+		NSEventTypeCursorUpdate				 = 17,
+		NSEventTypeScrollWheel				 = 22,
+		NSEventTypeTabletPoint				 = 23,
+		NSEventTypeTabletProximity			 = 24,
+		NSEventTypeOtherMouseDown			 = 25,
+		NSEventTypeOtherMouseUp				 = 26,
+		NSEventTypeOtherMouseDragged		 = 27,
+		NSEventTypeGesture		  = 29,
+		NSEventTypeMagnify		  = 30,
+		NSEventTypeSwipe		  = 31,
+		NSEventTypeRotate		  = 18,
+		NSEventTypeBeginGesture	  = 19,
+		NSEventTypeEndGesture	  = 20,
+		NSEventTypeSmartMagnify	 = 32,
 		NSEventTypeQuickLook  = 33,
-		NSEventTypePressure  = 34,
-		NSEventTypeDirectTouch  = 37)
+		NSEventTypePressure	 = 34,
+		NSEventTypeDirectTouch	= 37)
 
 	rtypes = {v: k for k, v in types.items()}
 
@@ -316,25 +317,25 @@ class Process(Util):
 			f = frame.thread.frames[idx]
 			if i + 1 < len(self.lastPrintedStack) and\
 			   f.addr == self.lastPrintedStack[i].addr and\
-		   	   idx > 0 and\
-   			   frame.thread.frames[idx - 1].addr ==\
-   			   self.lastPrintedStack[i + 1].addr:
-   				skipStart = skipStart or f
-   				continue
-   			if skipStart:
-   				head = "%d-%d" % (skipStart.idx, f.idx)
-   				skipStart = None
-   			else:
-   				head = "%d" % f.idx
+			   idx > 0 and\
+			   frame.thread.frames[idx - 1].addr ==\
+			   self.lastPrintedStack[i + 1].addr:
+				skipStart = skipStart or f
+				continue
+			if skipStart:
+				head = "%d-%d" % (skipStart.idx, f.idx)
+				skipStart = None
+			else:
+				head = "%d" % f.idx
 			sl = self.getSourceLine(f, " at %s:%d")
 			name = f.addr.symbol.name
-			if sl:
+			if sl and name:
 				name = name.split("(")[0]
-   			print("\r%7s %16x %s%s" % (
-   				head, f.addr.GetLoadAddress(self.target),
-   				self.printImage and (f.module.file.basename + " ") or "",
-   				name) + sl)
-   		self.lastPrintedStack = frame.thread.frames[::-1]
+			print("\r%7s %16x %s%s" % (
+				head, f.addr.GetLoadAddress(self.target),
+				self.printImage and (f.module.file.basename + " ") or "",
+				name) + sl)
+		self.lastPrintedStack = frame.thread.frames[::-1]
 
 	def getSourceLine(self, f, template):
 		if not f.line_entry.IsValid():
@@ -348,8 +349,11 @@ class Process(Util):
 		return template % (path, f.line_entry.line)
 			
 	def handleBreakpoint(self, frame, bp_loc):
-		tr = self.breakpoints.get(frame.pc) or\
-			self.breakpoints[frame.name]
+		tr = self.breakpoints.get(frame.pc)
+		if tr is None and bp_loc is None:
+			print("stopped in '%s'" % frame.name)
+			return
+		tr = tr or self.breakpoints[frame.name]
 		if hasattr(tr, "trace2"):
 			tr.trace2(frame, self)
 		else:
@@ -384,7 +388,14 @@ class Process(Util):
 			loc = b.GetLocationAtIndex(i)
 			print("Location %s" % loc)
 			self.breakpoints[loc.GetLoadAddress()] = t
-   		b.SetScriptCallbackFunction("callProcessHandleBp2")
+		b.SetScriptCallbackFunction("callProcessHandleBp2")
+
+	def getBpFrame(self):
+		for t in self.process.thread:
+			# print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
+				return t.GetFrameAtIndex(0)
+		raise Exception("No bp frame...")
 
 	def runTrace(self):
 		if len(self.breakpoints) == 0:
@@ -401,19 +412,22 @@ class Process(Util):
 		while True:
 			sys.stderr.write("\rWaiting (stopped=%d)..." % (
 				self.count.stopped))
-			if 0:
-				if not self.listener.WaitForEvent(lldb.UINT32_MAX, ev):
-					raise Exception("timeout lldb.UINT32_MAX achieved???")
 			# timeout to catch SIGINT 
 			while not self.listener.WaitForEvent(1, ev):
 				pass
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
 				self.count.stopped += 1
-				frame = self.process.selected_thread.GetFrameAtIndex(0)
+				# What didn't work:
+				# frame = self.process.selected_thread.GetFrameAtIndex(0)
+				# frame = lldb.SBThread.GetStackFrameFromEvent(ev)
+				# frame = lldb.SBThread.GetThreadFromEvent(ev).GetFrameAtIndex(0)
+				frame = self.getBpFrame()
 				if frame.sp in self.tasksBySp:
 					self.tasksBySp[frame.sp].runDeferredTask(self, frame)
 					del self.tasksBySp[frame.sp]
+				else:
+					self.handleBreakpoint(frame, None)
 				self.process.Continue()
 			elif state == lldb.eStateRunning:
 				pass
@@ -486,8 +500,8 @@ class Tool:
 		if self.options.tid:
 			try:
 				process.inspect(tid)
-			except Exception, e:
-				print("exception in inspect: %s" % e)
+			except Exception:
+				print("exception in inspect: %s" % sys.exc_info()[1])
 			self.traceAll(process, functions)
 		elif self.options.list:
 			process.listSymbols(False)
