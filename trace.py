@@ -146,6 +146,7 @@ class NamedTracePoint(TracePoint):
 
 class RetTracePoint(NamedTracePoint):
 	def trace2(self, frame, toolProc):
+		print("Adding task to %X" % (frame.sp + psize))
 		toolProc.addTask(frame.sp + psize, self)
 		frame.thread.StepOut()
 
@@ -352,7 +353,6 @@ class Process(Util):
 		tr = self.breakpoints.get(frame.pc)
 		if tr is None and bp_loc is None:
 			print("stopped in '%s'" % frame.name)
-			return
 		tr = tr or self.breakpoints[frame.name]
 		if hasattr(tr, "trace2"):
 			tr.trace2(frame, self)
@@ -391,8 +391,18 @@ class Process(Util):
 		b.SetScriptCallbackFunction("callProcessHandleBp2")
 
 	def getBpFrame(self):
-		for t in self.process.thread:
-			# print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+		# What didn't work:
+		# frame = self.process.selected_thread.GetFrameAtIndex(0)
+		# frame = lldb.SBThread.GetStackFrameFromEvent(ev)
+		# frame = lldb.SBThread.GetThreadFromEvent(ev).GetFrameAtIndex(0)
+		#
+		# This hangs on Linux
+		# for t in self.process.thread:
+		for tn in range(self.process.GetNumThreads()):
+			t = self.process.GetThreadAtIndex(tn)
+			if not t:
+				continue
+			print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
 			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
 				return t.GetFrameAtIndex(0)
 		raise Exception("No bp frame...")
@@ -418,15 +428,16 @@ class Process(Util):
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
 				self.count.stopped += 1
-				# What didn't work:
-				# frame = self.process.selected_thread.GetFrameAtIndex(0)
-				# frame = lldb.SBThread.GetStackFrameFromEvent(ev)
-				# frame = lldb.SBThread.GetThreadFromEvent(ev).GetFrameAtIndex(0)
-				frame = self.getBpFrame()
-				if frame.sp in self.tasksBySp:
-					self.tasksBySp[frame.sp].runDeferredTask(self, frame)
-					del self.tasksBySp[frame.sp]
-				else:
+				for tn in range(self.process.GetNumThreads()):
+					t = self.process.GetThreadAtIndex(tn)
+					frame = t.GetFrameAtIndex(0)
+					if frame.sp in self.tasksBySp:
+						self.tasksBySp[frame.sp].runDeferredTask(self, frame)
+						del self.tasksBySp[frame.sp]
+						tn = -1
+						break
+				if tn != -1:
+					frame = self.getBpFrame()
 					self.handleBreakpoint(frame, None)
 				self.process.Continue()
 			elif state == lldb.eStateRunning:
@@ -458,7 +469,8 @@ class Process(Util):
 		for m in self.target.modules:
 			for s in m:
 				if s.name.endswith("handleEvent:]"):
-					self.setBp(HandleEventTrace(s.addr.GetLoadAddress(self.target)))
+					self.setBp(
+						HandleEventTrace(s.addr.GetLoadAddress(self.target)))
 
 	def inspect(self, tid):
 		print("process=%s" % self.process)
