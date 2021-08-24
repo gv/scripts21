@@ -17,6 +17,10 @@ import lldb
 
 psize = 8
 
+def check(error):
+	if error.fail:
+		raise Exception(str(error))
+
 def hexDumpMem(process, start, end, error):
 	lsize = 16
 	while start < end:
@@ -25,12 +29,15 @@ def hexDumpMem(process, start, end, error):
 		st = process.ReadMemory(start, lsize, error)
 		if error.fail:
 			raise Exception(str(error))
-		sys.stderr.write(" %X " % start)
-		sys.stderr.write(
+		sys.stdout.write(" %X " % start)
+		sys.stdout.write(
 			("%02X " * lsize) % tuple(bytearray(st)))
 		for c in st:
-			sys.stderr.write(ord(c) < 32 and "." or c)
-		sys.stderr.write("\n")
+			if type(c) == int:
+				sys.stdout.write(c < 32 and "." or chr(c))
+				continue
+			sys.stdout.write(ord(c) < 32 and "." or c)
+		sys.stdout.write("\n")
 		start += lsize
 
 def callProcessHandleBp2(frame, bp_loc, dict):
@@ -55,8 +62,21 @@ class Util:
 		return result
 
 class TracePoint(Util):
+	def removeInvalidFunctions(self, ff):
+		result = []
+		for i in range(len(ff)):
+			if ff[i].symbol.name == None:
+				continue
+			print("name=%s" % ff[i].symbol.name)
+			result += [ff[i]]
+		return result
+	
 	def getAddrOf(self, name, target):
 		ff = target.FindFunctions(name)
+		if len(ff) == 0:
+			return 0
+		if len(ff) != 1:
+			ff = self.removeInvalidFunctions(ff)
 		if len(ff) == 0:
 			return 0
 		if len(ff) != 1:
@@ -80,6 +100,11 @@ class TracePoint(Util):
 			return self.getAddrOf(self.symbolName, target)
 		return None
 
+class Context:
+	pass
+
+GlobalContext = Context()
+
 class NamedTracePoint(TracePoint):
 	def __init__(self, name, addr=None):
 		self.addr = addr
@@ -88,7 +113,7 @@ class NamedTracePoint(TracePoint):
 		parts = name.split("#")
 		if len(parts) > 1:
 			name = parts[0]
-			self.commands = parts[1:]
+			self.commands = [x.strip() for x in parts[1:]]
 		parts = name.split("@")
 		if len(parts) > 1:
 			name = parts[0]
@@ -112,10 +137,37 @@ class NamedTracePoint(TracePoint):
 	def runScript(self, frame, cmd):
 		c = compile(cmd, cmd, "single")
 		error = lldb.SBError()
+		def getMemory(start, size):
+			s = frame.thread.process.ReadMemory(start, size, error)
+			check(error)
+			return s
+		def xd(start, end):
+			hexDumpMem(frame.thread.process, start, end, error)
+			check(error)
+		def vi0c(start):
+			ptr, length = struct.unpack("Pxxxxi", getMemory(start, 16))
+			# print("ptr=%X length=%d" % (ptr, length))
+			if length == 0:
+				return []
+			return struct.unpack("i" * length, getMemory(ptr, length * 4))
+		def vi(format, start):
+			format = format.replace("8", "x"*8)
+			ptr, length = struct.unpack(
+				format, getMemory(start, struct.calcsize(format)))
+			if format.index("P") > format.index("i"):
+				ptr, length = length, ptr
+			if length == 0:
+				return ()
+			return struct.unpack("i" * length, getMemory(ptr, 4 * length))
 		# Somehow eval gets r printed by itself (???)
 		r = eval(c, {}, dict(
-			f=frame, p=frame.thread.process, e=error, z=print))
+			f=frame, p=frame.thread.process, e=error, z=print,
+			m=getMemory,
+			g=GlobalContext,
+			x=xd,
+			vi=vi, vi0c=vi0c))
 		# print("result: %s" % r)
+
 
 	def trace2(self, frame, toolProc):
 		for filter in self.filters:
@@ -129,7 +181,7 @@ class NamedTracePoint(TracePoint):
 					break
 			if not found:
 				return
-		if not self.commands:
+		if 1 or not self.commands:
 			toolProc.printStack(frame)
 		if self.commands:
 			toolProc.process.SetSelectedThread(frame.thread)
@@ -137,7 +189,7 @@ class NamedTracePoint(TracePoint):
 				c2 = self.substCommand(frame, cmd)
 				if 1 or c2 != cmd:
 					sys.stdout.write("%s= " % c2)
-				if c2.startswith("p.") or c2.startswith("print("):
+				if re.match(".*[(]", c2):
 					self.runScript(frame, c2)
 				else:
 					toolProc.debugger.HandleCommand(c2)
@@ -332,7 +384,8 @@ class Process(Util):
 			name = f.addr.symbol.name
 			if sl and name:
 				name = name.split("(")[0]
-			print("\r%7s %16x %s%s" % (
+			sys.stderr.write("\r")
+			print("%7s %16x %s%s" % (
 				head, f.addr.GetLoadAddress(self.target),
 				self.printImage and (f.module.file.basename + " ") or "",
 				name) + sl)
@@ -402,7 +455,7 @@ class Process(Util):
 			t = self.process.GetThreadAtIndex(tn)
 			if not t:
 				continue
-			print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+			# print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
 			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
 				return t.GetFrameAtIndex(0)
 		raise Exception("No bp frame...")
