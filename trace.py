@@ -21,6 +21,11 @@ def check(error):
 	if error.fail:
 		raise Exception(str(error))
 
+def rightLimited(s, size):
+	if len(s) < size - 3:
+		return s
+	return "..." + s[-size:]
+
 def hexDumpMem(process, start, end, error):
 	lsize = 16
 	while start < end:
@@ -62,6 +67,18 @@ class Util:
 		return result
 
 class TracePoint(Util):
+	instancesById = {}
+
+	def getId(self):
+		self.count = 0
+		for c in reversed(self.symbolName):
+			if c in self.instancesById:
+				continue
+			self.id = c
+			self.instancesById[c] = self
+			return c
+		raise Exception("TODO")
+	
 	def removeInvalidFunctions(self, ff):
 		result = []
 		for i in range(len(ff)):
@@ -101,7 +118,8 @@ class TracePoint(Util):
 		return None
 
 class Context:
-	pass
+	def __init__(self):
+		self.levels = {}
 
 GlobalContext = Context()
 
@@ -126,6 +144,7 @@ class NamedTracePoint(TracePoint):
 			self.symbolName = name
 		else:
 			self.symbolName = name[1:]
+		self.id = self.getId()
 
 	def substCommand(self, frame, cmd):
 		"'memory read $rxx' is broken if DWARF is broken"
@@ -141,8 +160,8 @@ class NamedTracePoint(TracePoint):
 			s = frame.thread.process.ReadMemory(start, size, error)
 			check(error)
 			return s
-		def xd(start, end):
-			hexDumpMem(frame.thread.process, start, end, error)
+		def xd(start, size):
+			hexDumpMem(frame.thread.process, start, start+size, error)
 			check(error)
 		def vi0c(start):
 			ptr, length = struct.unpack("Pxxxxi", getMemory(start, 16))
@@ -151,6 +170,8 @@ class NamedTracePoint(TracePoint):
 				return []
 			return struct.unpack("i" * length, getMemory(ptr, length * 4))
 		def vi(format, start):
+			return v(format, "i", start)
+		def v(format, fc2, start):
 			format = format.replace("8", "x"*8)
 			ptr, length = struct.unpack(
 				format, getMemory(start, struct.calcsize(format)))
@@ -158,16 +179,30 @@ class NamedTracePoint(TracePoint):
 				ptr, length = length, ptr
 			if length == 0:
 				return ()
-			return struct.unpack("i" * length, getMemory(ptr, 4 * length))
+			f2 = fc2 * length
+			return struct.unpack(f2, getMemory(ptr, struct.calcsize(f2)))
+		def icu(ptr):
+			buf = getMemory(ptr, 32)
+			flags, length, start = struct.unpack("qixxxxP", buf[8:])
+			if flags & 2:
+				return bytes(buf[10:]).decode("utf-16")
+			return bytes(getMemory(start, (length - 1) * 2)).decode("utf-16")
+		def levelIn(tag):
+			GlobalContext.levels[tag] = GlobalContext.levels.get(tag, 0) + 1
+			return "%s %d" % (tag, GlobalContext.levels[tag])
+		def levelOut(tag):
+			GlobalContext.levels[tag] = GlobalContext.levels.get(tag, 0) - 1
+			return "%s %d" % (tag, GlobalContext.levels[tag])
 		# Somehow eval gets r printed by itself (???)
 		r = eval(c, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
 			m=getMemory,
 			g=GlobalContext,
 			x=xd,
-			vi=vi, vi0c=vi0c))
+			vi=vi, vi0c=vi0c, v=v,
+			icu=icu,
+			levelIn=levelIn, levelOut=levelOut))
 		# print("result: %s" % r)
-
 
 	def trace2(self, frame, toolProc):
 		for filter in self.filters:
@@ -181,14 +216,15 @@ class NamedTracePoint(TracePoint):
 					break
 			if not found:
 				return
+		self.count += 1
 		if 1 or not self.commands:
 			toolProc.printStack(frame)
 		if self.commands:
 			toolProc.process.SetSelectedThread(frame.thread)
 			for cmd in self.commands:
 				c2 = self.substCommand(frame, cmd)
-				if 1 or c2 != cmd:
-					sys.stdout.write("%s= " % c2)
+				sys.stdout.write("%s%d %s= " % (
+					self.id, self.count, rightLimited(c2, 40)))
 				if re.match(".*[(]", c2):
 					self.runScript(frame, c2)
 				else:
@@ -394,7 +430,9 @@ class Process(Util):
 	def getSourceLine(self, f, template):
 		if not f.line_entry.IsValid():
 			return ""
-		cwd = os.getcwd().split(os.sep)[-1]
+		cwd = (
+			self.options.output and os.path.dirname(self.options.output) or
+			os.getcwd()).split(os.sep)[-1]
 		parts = f.line_entry.file.fullpath.split(os.sep)
 		try:
 			path = os.sep.join(parts[parts.index(cwd) + 1:])
@@ -627,6 +665,8 @@ parser.add_argument(
 parser.add_argument(
 	"--events", action="store_true",
 	help="Trace handleEvent methods in every class and parse NSEvent structs")
+parser.add_argument(
+	"--output", "-o", help="Text output path")
 #parser.add_argument(
 #	"--nolib", action="store_true",
 #	help="Set BPs in main executable only")
