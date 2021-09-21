@@ -25,6 +25,11 @@ class Count:
 		self.name = value
 		self.size = 0
 
+class EntryFromBlock:
+	def __init__(self, block):
+		self.file = block.GetInlinedCallSiteFile()
+		self.line = block.GetInlinedCallSiteLine()
+
 class Input:
 	def __init__(self, path, args):
 		self.path = path
@@ -62,22 +67,31 @@ class Input:
 			raise Exception(str(self.error))
 		return result
 
+	def getAllSections(self):
+		def getSubSections(sec):
+			yield sec
+			if sec.GetNumSubSections() == 0:
+				return
+			for i in range(sec.GetNumSubSections()):
+				for t in getSubSections(sec.GetSubSectionAtIndex(i)):
+					yield t
+		# "for sec in self.module.section" yields None sometimes
+		for i in range(self.module.GetNumSections()):
+			for u in getSubSections(self.module.GetSectionAtIndex(i)):
+				yield u
+
 	def dumpSections(self):
 		if self.sectionsDumped:
 			return
-		for i in range(self.module.GetNumSections()):
-		   	sec = self.module.GetSectionAtIndex(i)
+		for sec in self.getAllSections():
 		   	self.printSec(sec)
 		self.sectionsDumped = True
 
 	def getCodeSection(self):
 		if self.cs:
 			return self.cs
-		# "for sec in self.module.section" yields None sometimes
-		for i in range(self.module.GetNumSections()):
-			sec = self.module.GetSectionAtIndex(i)
-			if sec.name == ".text" or sec.name == "__TEXT" or (
-					sec.name == "PT_LOAD[0]" and sec.GetPermissions() & 4):
+		for sec in self.getAllSections():
+			if sec.name == ".text" or sec.name == "__TEXT":
 				if self.cs:
 					self.printSec(sec)
 					self.printSec(self.cs)
@@ -101,12 +115,16 @@ class Input:
 				nn(sec.GetFileByteSize())))
 
 	def run(self, up):
+		if self.args.types:
+			return self.printTypes()
 		# GetStartAddress()/GetEndAddress() can be .o section addresses
 		# before link, so only their difference is useful
 		text = self.getCodeSection()
 		addr = lldb.SBAddress(text, 0)
 		while addr.GetOffset() < text.GetFileByteSize():
-			c = addr.GetSymbolContext(lldb.eSymbolContextLineEntry)
+			c = addr.GetSymbolContext(
+				lldb.eSymbolContextLineEntry | lldb.eSymbolContextBlock |
+				lldb.eSymbolContextCompUnit)
 			e = c.GetLineEntry()
 			if 0:
 				print("%016X %s:%d" % (
@@ -115,7 +133,19 @@ class Input:
 			if e.IsValid() and not self.args.thorough:
 				size = e.GetEndAddress().GetOffset() -\
 					e.GetStartAddress().GetOffset()
-			up.processEntry(e, size, self, addr)
+			if c.comp_unit.IsValid():
+				pass
+			if e.IsValid():
+				up.processEntry(e, size, self, addr)
+			else:
+				up.unknown.size += size
+				if self.args.unknown:
+					up.processUnknown(addr, size)
+			block = c.block
+			while block.IsValid():
+				if block.GetInlinedCallSiteFile().IsValid():
+					up.processEntry(EntryFromBlock(block), size, self, addr)
+				block = block.GetParent()
 			addr.OffsetAddress(size)
 			up.progress(size)
 		sys.stderr.write(" " * 40 + "\r")
@@ -130,6 +160,12 @@ class Input:
 					e.GetStartAddress().GetOffset()
 				up.processEntry(e, size, self, None)
 				up.progress(size)
+
+	def printTypes(self):
+		for i in range(self.module.GetNumCompileUnits()):
+			u = self.module.GetCompileUnitAtIndex(i)
+			for t in u.GetTypes():
+				print("name=%s" % t.name)
 
 	def descAddr(self, addr):
 		return "%s:%016X" % (addr.GetSection().GetName(), addr.GetOffset())
@@ -160,18 +196,23 @@ class Context:
 		basePath = self.args.output and\
 			os.path.dirname(self.args.output) or os.getcwd()
 		self.base = basePath.split(os.sep)[-1]
+		self.noSymbols = Count("<no symbols>")
+		self.symbols = {}
 		if self.args.verbose:
 			print("LLDB version = '%s'" % lldb.SBDebugger.GetVersionString())
 
 	def progress(self, size):
 		self.processedBytes += size
-		if self.processedBytes > self.progressNext:
-			sys.stderr.write(
-				"	%16s / %16s (%3d%%) other=%16s unknown=%16s\r" % (
-				nn(self.processedBytes), nn(self.allCode.size),
-				self.processedBytes * 100 / self.allCode.size,
-				nn(self.other.size), nn(self.unknown.size)))
-			self.progressNext += 2048
+		if self.processedBytes <= self.progressNext:
+			return
+		sys.stderr.write("	%16s / %16s (%3d%%) %s=%16s unknown=%16s\r" % (
+			nn(self.processedBytes), nn(self.allCode.size),
+			self.processedBytes * 100 / self.allCode.size,
+			self.args.unknown and "no symbols" or "other",
+			self.args.unknown and nn(self.noSymbols.size) or\
+			nn(self.other.size),
+			nn(self.unknown.size)))
+		self.progressNext += 2048
 
 	def prepare(self, inputs):
 		self.prefixes = []
@@ -207,9 +248,6 @@ class Context:
 		self.report()
 
 	def processEntry(self, e, size, input, addr):
-		if not e.IsValid():
-			self.unknown.size += size
-			return
 		if self.last.spec == e.file:
 			prefixes = self.last.prefixes
 		else:
@@ -229,9 +267,12 @@ class Context:
 		self.reportCounts(self.prefixes + self.getCounts())
 
 	def getCounts(self):
-		return [
+		counts = [
 			self.unknown, self.other, self.accounted,
 			self.allCode, self.allFiles, self.badSymbols]
+		if not self.args.unknown:
+			return counts
+		return list(self.symbols.values()) + [self.noSymbols] + counts
 
 	def reportCounts(self, counts):
 		for count in counts:
@@ -249,6 +290,26 @@ class Context:
 
 	def normalizePath(self, path):
 		return "/".join(self.getParts(path))
+
+	def processUnknown2(self, addr, size):
+		c = addr.GetSymbolContext(lldb.eSymbolContextSymbol)
+		if c.symbol.IsValid():
+			s = self.symbols.get(c.symbol.name, Count(c.symbol.name))
+			s.size += size
+			self.symbols[c.symbol.name] = s
+		else:
+			self.noSymbols.size += size
+
+	def processUnknown(self, addr, size):
+		return self.processUnknown2(addr, size)
+		# eSymbolContextSymbol/c.symbol give us only exports which is no use
+		c = addr.GetSymbolContext(lldb.eSymbolContextFunction)
+		if c.function.IsValid():
+			s = self.symbols.get(c.function.name, Count(c.function.name))
+			s.size += size
+			self.symbols[c.function.name] = s
+		else:
+			self.noSymbols.size += size
 
 class InstructionSpan:
 	def __init__(self, ilist, finished):
@@ -355,6 +416,11 @@ Line mode: print annotated contents of every file
 parser.add_argument(
 	"--instructions", "-g", action="store_true",
 	help="Print disassembled instructions under each line (implies -f)")
+parser.add_argument(
+	"--unknown", action="store_true",
+	help="Try to resolve symbols for unresolvable locations")
+parser.add_argument(
+	"--types", action="store_true", help="List types & exit")
 parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
