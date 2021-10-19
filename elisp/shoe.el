@@ -432,7 +432,9 @@ next grep is started"
 (defun vc-after-save () "Disable"
 	   (vg-message "Wrote %s (vc-after-save disabled)" buffer-file-name))
 (setq fast-but-imprecise-scrolling t)
+(require 'grep)
 (grep-apply-setting 'grep-command "git grep -n ")
+(grep-apply-setting 'grep-use-null-device nil)
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
 
