@@ -80,6 +80,11 @@
 ;;     GENERAL KEYS
 ;;     ``````` ````
 
+(defun vg-backward-delete-word ()
+ "Delete word without changing clipboard"
+ (interactive)
+ (delete-region (point) (progn (forward-word -1) (point))))
+
 (global-set-key [home] 'beginning-of-line)
 (global-set-key [end] 'end-of-line)
 ; Workaround for windows remote terminals
@@ -161,6 +166,8 @@
   (define-key global-map (kbd "C-\\")
    (lambda () (interactive) (vg-message "Keyboard language switch disabled")))
  (define-key global-map (kbd "s-g") 'google-at-point)
+ (define-key global-map [C-backspace] 'vg-backward-delete-word)
+ (define-key global-map [M-backspace] 'vg-backward-delete-word)
   ;; latvian keyboard workaround 
   (define-key global-map (kbd "M-'")
 	(lambda () (interactive) (insert "`")))
