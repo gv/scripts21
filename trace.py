@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from __future__ import print_function
 "Trace function calls & print stacks"
 import argparse, re, sys, os, subprocess, json, fnmatch, struct
@@ -47,7 +47,7 @@ def hexDumpMem(process, start, end, error):
 
 def callProcessHandleBp2(frame, bp_loc, dict):
 	process = frame.GetThread().GetProcess()
-	print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
+	# print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
 	Process.objects[process.id].handleBreakpoint(frame, bp_loc)
 
 def callProcessHandleBp(frame, bp_loc, dict):
@@ -70,6 +70,8 @@ class TracePoint(Util):
 	instancesById = {}
 
 	def getId(self):
+		if hasattr(self, "id"):
+			return self.id
 		self.count = 0
 		for c in reversed(self.symbolName):
 			if c in self.instancesById:
@@ -77,7 +79,8 @@ class TracePoint(Util):
 			self.id = c
 			self.instancesById[c] = self
 			return c
-		raise Exception("TODO")
+		self.id = "!"
+		return self.id
 	
 	def removeInvalidFunctions(self, ff):
 		result = []
@@ -124,7 +127,7 @@ class Context:
 GlobalContext = Context()
 
 class NamedTracePoint(TracePoint):
-	def __init__(self, name, addr=None):
+	def parse(self, name, addr=None):
 		self.addr = addr
 		self.commands = []
 		self.filters = []
@@ -144,7 +147,15 @@ class NamedTracePoint(TracePoint):
 			self.symbolName = name
 		else:
 			self.symbolName = name[1:]
-		self.id = self.getId()
+		return self
+
+	def copy(self, other):
+		self.addr = other.addr
+		self.commands = other.commands
+		self.filters = other.filters
+		self.nameIsFull = other.nameIsFull
+		self.symbolName = other.symbolName
+		return self
 
 	def substCommand(self, frame, cmd):
 		"'memory read $rxx' is broken if DWARF is broken"
@@ -327,7 +338,7 @@ class HandleEventCall:
 
 	def runDeferredTask(self, toolProc, frame):
 		r = frame.reg["rax"].GetValueAsUnsigned()
-		print(" x=%d y=%d r=%X %s %s" % (
+		print("\r x=%d y=%d r=%X %s %s" % (
 			self.ev.x, self.ev.y, r, self.ev.getTypeName(), self.name))
 
 class HandleEventTrace(TracePoint):
@@ -465,9 +476,10 @@ class Process(Util):
 
 	def setBp(self, t):
 		addr = t.getAddr(self.target, self.process)
+		id = t.getId()
 		if addr:
 			self.breakpoints[addr] = t
-			print("Setting bp to %X" % addr)
+			print("Setting bp '%s' to %X" % (t.id, addr))
 			b = self.target.BreakpointCreateByAddress(addr)
 		else:
 			self.breakpoints[t.symbolName] = t
@@ -481,6 +493,21 @@ class Process(Util):
 			self.breakpoints[loc.GetLoadAddress()] = t
 		b.SetScriptCallbackFunction("callProcessHandleBp2")
 
+# /// Thread stop reasons.
+# enum StopReason {
+#  eStopReasonInvalid = 0,
+#  eStopReasonNone,
+#  eStopReasonTrace,
+#  eStopReasonBreakpoint,
+#  eStopReasonWatchpoint,
+#  eStopReasonSignal,
+#  eStopReasonException,
+#  eStopReasonExec, ///< Program was re-exec'ed
+#  eStopReasonPlanComplete,
+#  eStopReasonThreadExiting,
+#  eStopReasonInstrumentation
+#};
+
 	def getBpFrame(self):
 		# What didn't work:
 		# frame = self.process.selected_thread.GetFrameAtIndex(0)
@@ -489,12 +516,20 @@ class Process(Util):
 		#
 		# This hangs on Linux
 		# for t in self.process.thread:
+		print("%d threads" % self.process.GetNumThreads())
 		for tn in range(self.process.GetNumThreads()):
 			t = self.process.GetThreadAtIndex(tn)
-			if not t:
+			# This worked on Linux:
+			# if not t:
+			if t is None:
+				print("Thread %d is '%s'" % (tn, t))
 				continue
-			# print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+			print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+			# Worked on Linux
 			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
+				return t.GetFrameAtIndex(0)
+			# Should work on Mac...
+			if 0 and t.GetStopReason() == lldb.eStopReasonSignal:
 				return t.GetFrameAtIndex(0)
 		raise Exception("No bp frame...")
 
@@ -527,7 +562,9 @@ class Process(Util):
 						del self.tasksBySp[frame.sp]
 						tn = -1
 						break
-				if tn != -1:
+				# On Mac handleBreakpoint is called by attached script
+				# (not on Linux) 
+				if tn != -1 and sys.platform != "darwin":
 					frame = self.getBpFrame()
 					self.handleBreakpoint(frame, None)
 				self.process.Continue()
@@ -589,8 +626,8 @@ class Tool:
 		launch = self.options.launch and self.options.launch.split(" ")
 		try:
 			i = functions.index("@")
+			launch = functions[i + 1:]
 			functions = functions[:i]
-			launch = functions[:i + 1]
 		except ValueError:
 			pass
 		if functions and not launch:
@@ -620,10 +657,24 @@ class Tool:
 		for expr in functions:
 			if expr.endswith(".dylib"):
 				process.breakAtEveryEntryPointOfModule(expr)
-			elif expr.startswith("/"):
-				process.setBp(RetTracePoint(expr[1:]))
 			else:
-				process.setBp(NamedTracePoint(expr))
+				if expr.startswith("/"):
+					point = RetTracePoint().parse(expr[1:])
+				else:
+					point = NamedTracePoint().parse(expr)
+				if "*" in point.symbolName:
+					names = []
+					for m in process.target.modules:
+						for s in m:
+							if s.name and fnmatch.fnmatch(
+									s.name, point.symbolName):
+								p2 = point.__class__().copy(point)
+								p2.symbolName = s.name
+								p2.addr = s.addr.GetLoadAddress(
+									process.target)
+								process.setBp(p2)
+				else:
+					process.setBp(point)
 		if self.options.events:
 			process.setHandleEventBreakpoints()
 		process.runTrace()
