@@ -278,7 +278,10 @@
   (c-set-offset 'arglist-intro '+)
   (c-set-offset 'arglist-cont-nonempty '+)
   (c-set-offset 'arglist-close 0)
-  (c-set-offset 'innamespace 0)
+ (c-set-offset 'innamespace 0)
+ ;;(c-set-offset 'case-label '+)
+ (c-set-offset 'brace-list-intro '+)
+ (c-set-offset 'brace-list-entry 0)
   (abbrev-mode -1)
   (vg-message
    "C mode hook: tab-width=%d c-basic-offset=%d" tab-width c-basic-offset))
@@ -348,7 +351,7 @@ next grep is started"
   (when (and
 		 (string-equal mode-name "Emacs-Lisp")
 		 (not
-		  (string-match "/shoe.el$" buffer-file-name)))
+		  (string-match "/\\(shoe\\|.dir-locals\\).el$" buffer-file-name)))
 	(vg-message "Saved %s & evaluating..." buffer-file-name)
 	(eval-buffer)))
 (add-hook 'after-save-hook 'vg-after-save)
@@ -440,7 +443,7 @@ next grep is started"
 	   (vg-message "Wrote %s (vc-after-save disabled)" buffer-file-name))
 (setq fast-but-imprecise-scrolling t)
 (require 'grep)
-(grep-apply-setting 'grep-command "git grep -n ")
+(grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
 (grep-apply-setting 'grep-use-null-device nil)
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
