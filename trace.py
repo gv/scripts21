@@ -73,12 +73,13 @@ class TracePoint(Util):
 		if hasattr(self, "id"):
 			return self.id
 		self.count = 0
-		for c in reversed(self.symbolName):
-			if c in self.instancesById:
-				continue
-			self.id = c
-			self.instancesById[c] = self
-			return c
+		if self.symbolName:
+			for c in reversed(self.symbolName):
+				if c in self.instancesById:
+					continue
+				self.id = c
+				self.instancesById[c] = self
+				return c
 		self.id = "!"
 		return self.id
 	
@@ -120,6 +121,9 @@ class TracePoint(Util):
 			return self.getAddrOf(self.symbolName, target)
 		return None
 
+	def filterAccepts(self, frame, toolProc):
+		return True
+
 class Context:
 	def __init__(self):
 		self.levels = {}
@@ -129,6 +133,7 @@ GlobalContext = Context()
 class NamedTracePoint(TracePoint):
 	def parse(self, name, addr=None):
 		self.addr = addr
+		self.symbolName = None
 		self.commands = []
 		self.filters = []
 		parts = name.split("#")
@@ -141,7 +146,7 @@ class NamedTracePoint(TracePoint):
 			self.filters = parts[1:]
 		if name.startswith("0x"):
 			self.addr = int(name, 16)
-			return
+			return self
 		self.nameIsFull = not name.startswith("~")
 		if self.nameIsFull:
 			self.symbolName = name
@@ -169,7 +174,8 @@ class NamedTracePoint(TracePoint):
 		error = lldb.SBError()
 		def getMemory(start, size):
 			s = frame.thread.process.ReadMemory(start, size, error)
-			check(error)
+			if error.fail:
+				raise Exception("%s size=%d" % (error, size))
 			return s
 		def xd(start, size):
 			hexDumpMem(frame.thread.process, start, start+size, error)
@@ -215,18 +221,17 @@ class NamedTracePoint(TracePoint):
 			levelIn=levelIn, levelOut=levelOut))
 		# print("result: %s" % r)
 
-	def trace2(self, frame, toolProc):
+	def filterAccepts(self, frame, toolProc):
 		for filter in self.filters:
-			found = None
 			for f in frame.thread.frames:
 				if f.addr.symbol.name and\
 				   fnmatch.fnmatch(f.addr.symbol.name, filter) or\
 				   f.module.file.basename and\
 				   fnmatch.fnmatch(f.module.file.basename, filter):
-					found = f
-					break
-			if not found:
-				return
+					return True
+		return not self.filters
+
+	def trace2(self, frame, toolProc):
 		self.count += 1
 		if 1 or not self.commands:
 			toolProc.printStack(frame)
@@ -404,7 +409,9 @@ class Process(Util):
 		sys.stderr.write("Detaching %s..." % self.process)
 		self.error = self.process.Detach()
 		if not self.error.success:
-			raise Exception(str(self.error))
+			msg = str(self.error)
+			if msg != "error: Sending disconnect packet failed.":
+				raise Exception(str(self.error))
 		self.debugger.DeleteTarget(self.target)
 		sys.stderr.write("Done\n")
 
@@ -456,11 +463,12 @@ class Process(Util):
 		if tr is None and bp_loc is None:
 			print("stopped in '%s'" % frame.name)
 		tr = tr or self.breakpoints[frame.name]
-		if hasattr(tr, "trace2"):
-			tr.trace2(frame, self)
-		else:
-			self.printStack(frame)
-			tr.trace(frame, self.process, self.error)
+		if tr.filterAccepts(frame, self):
+			if hasattr(tr, "trace2"):
+				tr.trace2(frame, self)
+			else:
+				self.printStack(frame)
+				tr.trace(frame, self.process, self.error)
 
 	def traceSsl(self):
 		if 0:
@@ -624,12 +632,14 @@ class Tool:
 		pid = self.options.PID
 		functions = self.options.FUNCTION
 		launch = self.options.launch and self.options.launch.split(" ")
-		try:
+		if "@@" in functions:
+			i = functions.index("@@")
+			launch = functions[:i]
+			functions = functions[i+1:]
+		elif "@" in functions:
 			i = functions.index("@")
 			launch = functions[i + 1:]
 			functions = functions[:i]
-		except ValueError:
-			pass
 		if functions and not launch:
 			pid = functions[-1]
 			functions = functions[:-1]
@@ -662,7 +672,7 @@ class Tool:
 					point = RetTracePoint().parse(expr[1:])
 				else:
 					point = NamedTracePoint().parse(expr)
-				if "*" in point.symbolName:
+				if point.symbolName and "*" in point.symbolName:
 					names = []
 					for m in process.target.modules:
 						for s in m:

@@ -25,6 +25,9 @@ class Count:
 		self.name = value
 		self.size = 0
 
+	def __lt__(self, other):
+		return self.size < other.size
+
 class EntryFromBlock:
 	def __init__(self, block):
 		self.file = block.GetInlinedCallSiteFile()
@@ -277,7 +280,7 @@ class Context:
 	def reportCounts(self, counts):
 		for count in counts:
 			if True or count.size:
-				print(" %16d %s" % (count.size, count.name))
+				print(" %16s %s" % (nn(count.size), count.name))
 
 	def getParts(self, path):
 		parts = re.split(r"[/\\]+", path)
@@ -396,7 +399,100 @@ class Lines(Context):
 				e.file.fullpath, e.line))
 			raise
 		
+class Maps(Context):
+	secPattern = r"([.][^\s]+) +0x([0-9a-f]{8,16}) +0x([0-9a-f]+)"
+		
+	class Section:
+		def __init__(self):
+			pass
+		
+	class ParseState:
+		def __init__(self):
+			self.destName = None
+			self.srcName = None
+			
+	def __init__(self, args):
+		self.args = args
+		self.sources = {}
+		self.nonLibObjects = Count("<other>")
+		self.accounted = Count("<accounted>")
 
+	def run(self):
+		if self.args.input:
+			raise Exception(
+				"Can't have binary input together with link maps")
+		if self.args.PREFIX:
+			raise Exception(
+				"Map parse doesn't take PREFIX arguments")
+		for path in self.args.map:
+			self.processMap(path)
+		self.report()
+
+	def processMap(self, path):
+		state = self.ParseState()
+		dest = None
+		startedMemoryMap = False
+		for line in open(path, "r"):
+			line = line.rstrip()
+			if not startedMemoryMap:
+				if line == "Linker script and memory map":
+					startedMemoryMap = True
+				continue
+			m = re.match(self.secPattern, line)
+			if m:
+				dest = self.Section()
+				dest.name, dest.start, dest.size = m.group(1, 2, 3)
+				if self.args.idebug or not dest.name.startswith(".debug"):
+					c = Count(dest.name)
+					c.size = int(dest.size, 16)
+					# self.sources[dest.name] = c
+				continue
+			if dest and dest.name.startswith(".debug") and not self.args.idebug:
+				continue
+			m = re.match(r" ([.][^\s]+)$", line)
+			if m:
+				state.srcName = m.group(1)
+				continue
+			m = re.match(" " + self.secPattern + " (.+)", line)
+			m2 = m or re.match(
+				r" {16}0x([0-9a-f]{8,16}) +0x([0-9a-f]+) (.+)", line)
+			if m2:
+				if not dest:
+					sys.stderr.write(
+						"Warning: memory outside section '%s'\n" % line)
+					continue
+				if m:
+					source = m.group(4).split("(")
+					size = int(m.group(3), 16)
+				else: # m2 != None
+					if not state.srcName:
+						sys.stderr.write(
+							"Warning: memory without source section '%s'\n" % line)
+						# Still usable
+					source = m2.group(3).split("(")
+					size = int(m2.group(2), 16)
+				self.accounted.size += size
+				if self.args.bydest:
+					if len(source) == 1:
+						source = "<other>"
+					else:
+						source = source[0]
+					source += " -> %s" % dest.name
+				else:
+					if len(source) == 1:
+						self.nonLibObjects.size += size
+						continue
+					source = source[0]
+				count = self.sources.get(source, Count(source))
+				count.size += size
+				self.sources[source] = count
+
+	def report(self):
+		self.reportCounts(
+		   	list(sorted(self.sources.values())) + [
+				self.nonLibObjects, self.accounted])
+					
+		
 take_off = datetime.datetime.now()
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
@@ -422,11 +518,17 @@ parser.add_argument(
 parser.add_argument(
 	"--types", action="store_true", help="List types & exit")
 parser.add_argument(
+	"--map", "-m", action="append", help="Parse link map")
+parser.add_argument(
+	"--bydest", action="store_true", help="By destination section")
+parser.add_argument(
+	"--idebug", action="store_true", help="Include debug sections")
+parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
 args = parser.parse_args()
 if args.instructions:
 	args.file = True
-(args.file and Lines or Context)(args).run() 
+(args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))
