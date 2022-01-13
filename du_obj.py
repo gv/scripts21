@@ -33,6 +33,9 @@ class EntryFromBlock:
 		self.file = block.GetInlinedCallSiteFile()
 		self.line = block.GetInlinedCallSiteLine()
 
+	def IsValid(self):
+		return True
+
 class Input:
 	def __init__(self, path, args):
 		self.path = path
@@ -114,7 +117,8 @@ class Input:
 	def printSec(self, sec):
 		sys.stderr.write(
 			"%s: '%s' GetPermissions()=%X GetFileByteSize()=%s\n" % (
-				os.path.basename(self.path), sec.GetName(), sec.GetPermissions(),
+				os.path.basename(self.path), sec.GetName(),
+				sec.GetPermissions(),
 				nn(sec.GetFileByteSize())))
 
 	def run(self, up):
@@ -136,8 +140,8 @@ class Input:
 			if e.IsValid() and not self.args.thorough:
 				size = e.GetEndAddress().GetOffset() -\
 					e.GetStartAddress().GetOffset()
-			if c.comp_unit.IsValid():
-				pass
+			# if c.comp_unit.IsValid():
+			#	pass
 			if e.IsValid():
 				up.processEntry(e, size, self, addr)
 			else:
@@ -414,7 +418,6 @@ class Maps(Context):
 	def __init__(self, args):
 		self.args = args
 		self.sources = {}
-		self.nonLibObjects = Count("<other>")
 		self.accounted = Count("<accounted>")
 
 	def run(self):
@@ -462,27 +465,23 @@ class Maps(Context):
 						"Warning: memory outside section '%s'\n" % line)
 					continue
 				if m:
-					source = m.group(4).split("(")
+					fullSource = m.group(4)
 					size = int(m.group(3), 16)
 				else: # m2 != None
 					if not state.srcName:
 						sys.stderr.write(
 							"Warning: memory without source section '%s'\n" % line)
 						# Still usable
-					source = m2.group(3).split("(")
+					fullSource = m2.group(3)
 					size = int(m2.group(2), 16)
 				self.accounted.size += size
-				if self.args.bydest:
-					if len(source) == 1:
-						source = "<other>"
-					else:
-						source = source[0]
-					source += " -> %s" % dest.name
+				source = fullSource.split("(")
+				if len(source) == 1:
+					source = "<other>"
 				else:
-					if len(source) == 1:
-						self.nonLibObjects.size += size
-						continue
 					source = source[0]
+				if self.args.bydest:
+					source += " -> %s" % dest.name
 				count = self.sources.get(source, Count(source))
 				count.size += size
 				self.sources[source] = count
@@ -490,7 +489,7 @@ class Maps(Context):
 	def report(self):
 		self.reportCounts(
 		   	list(sorted(self.sources.values())) + [
-				self.nonLibObjects, self.accounted])
+				self.accounted])
 					
 		
 take_off = datetime.datetime.now()
