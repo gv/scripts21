@@ -475,11 +475,18 @@ class Maps(Context):
 					fullSource = m2.group(3)
 					size = int(m2.group(2), 16)
 				self.accounted.size += size
-				source = fullSource.split("(")
-				if len(source) == 1:
-					source = "<other>"
-				else:
-					source = source[0]
+				source = None
+				if self.args.expand:
+					for x in self.args.expand:
+						if x in fullSource:
+							source = fullSource
+							break
+				if not source:
+					p = fullSource.split("(")
+					if len(p) == 1:
+						source = "<other>"
+					else:
+						source = p[0]
 				if self.args.bydest:
 					source += " -> %s" % dest.name
 				count = self.sources.get(source, Count(source))
@@ -522,6 +529,9 @@ parser.add_argument(
 	"--bydest", action="store_true", help="By destination section")
 parser.add_argument(
 	"--idebug", action="store_true", help="Include debug sections")
+parser.add_argument(
+	"--expand", "-x", action="append",
+	help="Hanlde object/lib names containing substring as separate sources")
 parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
