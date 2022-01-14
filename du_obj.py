@@ -21,6 +21,8 @@ def nn(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
 
 class Count:
+	__slots__ = ("name", "size")
+	
 	def __init__(self, value):
 		self.name = value
 		self.size = 0
@@ -90,7 +92,7 @@ class Input:
 		if self.sectionsDumped:
 			return
 		for sec in self.getAllSections():
-		   	self.printSec(sec)
+			self.printSec(sec)
 		self.sectionsDumped = True
 
 	def getCodeSection(self):
@@ -144,6 +146,7 @@ class Input:
 			#	pass
 			if e.IsValid():
 				up.processEntry(e, size, self, addr)
+				up.entries.size += 1
 			else:
 				up.unknown.size += size
 				if self.args.unknown:
@@ -152,6 +155,7 @@ class Input:
 			while block.IsValid():
 				if block.GetInlinedCallSiteFile().IsValid():
 					up.processEntry(EntryFromBlock(block), size, self, addr)
+					up.inlineEntries.size += 1
 				block = block.GetParent()
 			addr.OffsetAddress(size)
 			up.progress(size)
@@ -190,6 +194,12 @@ class FileSpecAndPrefixes:
 		self.spec = self.prefixes = None
 		
 class Context:
+	__slots__ = (
+		"args", "other", "unknown", "accounted", "allCode", "allFiles",
+		"badSymbols", "processedBytes", "progressNext", "base",
+		"noSymbols", "symbols", "entries", "inlineEntries",
+		"prefixes", "index", "last", "output")
+	
 	def __init__(self, args):
 		self.args = args
 		self.other = Count("<other>")
@@ -198,6 +208,7 @@ class Context:
 		self.allCode = Count("<all code>")
 		self.allFiles = Count("<all files>")
 		self.badSymbols = Count("<bad symbols>")
+		self.output = None
 		self.processedBytes = 0
 		self.progressNext = 0
 		basePath = self.args.output and\
@@ -205,6 +216,8 @@ class Context:
 		self.base = basePath.split(os.sep)[-1]
 		self.noSymbols = Count("<no symbols>")
 		self.symbols = {}
+		self.entries = Count("<entries>")
+		self.inlineEntries = Count("<inline>")
 		if self.args.verbose:
 			print("LLDB version = '%s'" % lldb.SBDebugger.GetVersionString())
 
@@ -283,8 +296,10 @@ class Context:
 
 	def reportCounts(self, counts):
 		for count in counts:
-			if True or count.size:
-				print(" %16s %s" % (nn(count.size), count.name))
+			print(" %16s %s" % (nn(count.size), count.name))
+			if self.output:
+				self.output.write(" %16s %s\n" % (
+					nn(count.size), count.name))
 
 	def getParts(self, path):
 		parts = re.split(r"[/\\]+", path)
@@ -324,12 +339,14 @@ class InstructionSpan:
 
 	def print(self, output):
 		for i in self.ilist:
-			output.print("  %s: %s" % (i.addr.module.file.basename, i))
+			output.print("	%s: %s" % (i.addr.module.file.basename, i))
 		if not self.finished:
-			output.print("  %s: ..." % i.addr.module.file.basename)
+			output.print("	%s: ..." % i.addr.module.file.basename)
 		return self
 
 class SourceLine:
+	__slots__ = ("text", "number", "codeSize", "instructionSpans")
+	
 	def __init__(self, text, number):
 		self.text = text
 		self.number = number
@@ -337,19 +354,38 @@ class SourceLine:
 		self.instructionSpans = []
 
 class SourceFile:
+	__slots__ = (
+		"path", "name", "args", "lines", "lastHash", "lastDirHash",
+		"lastSpec", "gitId")
+	
 	def __init__(self, path, name, args):
 		self.path = path
 		self.name = name
 		self.args = args
+		self.gitId = None
+
+	def load(self):
 		# python2:
 		# lines = open(self.path).read().decode("windows-1251").splitlines()
-		lines = open(self.path, encoding="utf-8").read().splitlines()
+		if self.gitId:
+			lines = subprocess.check_output(
+				["git", "cat-file", "blob", self.gitId])
+			if lines.decode:
+				lines = lines.decode("utf-8")
+			lines = lines.splitlines()
+		else:
+			lines = open(self.path, encoding="utf-8").read().splitlines()
 		self.lines = [SourceLine(s, i) for i, s in enumerate(lines)]
+		return self
 
 	def printLines(self, output):
+		output.print("%s:0: New file -----------------------------" % 
+			self.name)
 		for line in self.lines:
-			m = "%s:%d: %2d %s" % (
-				self.name, line.number, line.codeSize, line.text)
+			m = "%03d %s" % (
+				line.codeSize, line.text)
+			if line.number != 0 and line.number % 10 == 0:
+				m += " // at %s:%d" % (self.name, line.number)
 			if sys.version_info < (3, 0):
 				m = m.encode("utf-8")
 			output.print(m)
@@ -358,36 +394,92 @@ class SourceFile:
 					s.print(output)
 
 class Lines(Context):
+	__slots__ = ("files", "lastFile", "nameMap", "lookups")
+	
 	def prepare(self, inputs):
 		self.files = {}
-		self.output = self.args.output and open(self.args.output, "wt") or\
-			sys.stdout
+		self.lastFile = None
+		self.nameMap = {}
+		output = self.args.output or self.args.git and\
+			"%s-du.txt" % self.args.git[:8]
+		if output:
+			self.output = open(output, "wt")
+			self.output.write(" -*- mode: compilation -*-\n")
+			self.output.write(" (highlight-regexp \"000\" 'hi-green)\n")
+		else:
+			raise Exception("Must have output file")
+		if self.args.git:
+			lines = subprocess.check_output([
+				"git", "ls-tree", "-r", self.args.git]).splitlines();
+			for line in lines:
+				if not line:
+					break
+				if line.decode:
+					line = line.decode("utf-8")
+				params, path = line.split("\t", 2)
+				_, _, id = params.split(" ")
+				if re.match(r".+[.](c|cc|cpp|h|H|C|qx)$", path):
+					self.addPath(path, gitId=id)
+					if self.args.verbose:
+						sys.stderr.write("Added '%s'\n" % path)
 		for path in self.args.PREFIX:
-			np = self.normalizePath(path)
-			self.files[np] = SourceFile(path, np, self.args)
+			self.addPath(path)
+		if len(self.files) == 0:
+			raise Exception("No source files")
+		self.lookups = [0, 0, 0]
+
+	def addPath(self, path, gitId=None):
+		np = self.normalizePath(path)
+		self.files[np] = SourceFile(path, np, self.args)
+		self.files[np].gitId = gitId
+		self.files[np].load()
 
 	def report(self):
-		for file in self.files.values():
-			file.printLines(self)
-		self.reportCounts(self.getCounts())
+		for file in set(self.files.values()):
+			if file:
+				file.printLines(self)
+		self.reportCounts(self.getCounts() + [
+			self.entries, self.inlineEntries])
+		sys.stderr.write("lookups=%s " % " ".join(
+			[nn(x) for x in self.lookups]))
 
 	def print(self, s):
 		self.output.write(s + "\n")
 
 	def processEntry(self, e, size, input, addr):
-		if not e.IsValid():
-			self.unknown.size += size
-			return
-		f = self.files.get(self.normalizePath(e.file.fullpath))
+		# Optimization
+		cache = self
+		f = cache.lastFile
+		h = hash(e.file.GetFilename())
+		d = hash(e.file.GetDirectory())
+		if f:
+			if f.lastHash != h or\
+			   f.lastSpec.basename != e.file.basename or\
+			   f.lastSpec.dirname != e.file.dirname:
+				f = None
 		if not f:
-			self.other.size += size
-			return
+			self.lookups[1] += 1
+			f = cache.nameMap.get(e.file.GetFilename())
+			if not f or f.lastDirHash != d or\
+			   f.lastSpec.GetDirectory() != e.file.GetDirectory():
+				self.lookups[2] += 1
+				f = self.files.get(self.normalizePath(e.file.fullpath))
+				if not f:
+					self.other.size += size
+					return
+				cache.nameMap[e.file.GetFilename()] = f
+		f.lastHash = h
+		f.lastDirHash = d
+		f.lastSpec = e.file
+		cache.lastFile = f
+		# End of optimization
 		self.accounted.size += size
 		try:
-			if e.line - 1 >= len(f.lines):
+			try:
+				f.lines[e.line - 1].codeSize += size
+			except IndexError:
 				self.badSymbols.size += size
 				return
-			f.lines[e.line - 1].codeSize += size
 			if not self.args.instructions:
 				return
 			icount = 0
@@ -405,7 +497,7 @@ class Lines(Context):
 		
 class Maps(Context):
 	secPattern = r"([.][^\s]+) +0x([0-9a-f]{8,16}) +0x([0-9a-f]+)"
-		
+		 
 	class Section:
 		def __init__(self):
 			pass
@@ -495,7 +587,7 @@ class Maps(Context):
 
 	def report(self):
 		self.reportCounts(
-		   	list(sorted(self.sources.values())) + [
+			list(sorted(self.sources.values())) + [
 				self.accounted])
 					
 		
@@ -533,10 +625,12 @@ parser.add_argument(
 	"--expand", "-x", action="append",
 	help="Hanlde object/lib names containing substring as separate sources")
 parser.add_argument(
+	"--git", help="Get file list + contents form REVISION (-f)")
+parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
 args = parser.parse_args()
-if args.instructions:
+if args.instructions or args.git:
 	args.file = True
 (args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
