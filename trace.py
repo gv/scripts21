@@ -47,7 +47,7 @@ def hexDumpMem(process, start, end, error):
 
 def callProcessHandleBp2(frame, bp_loc, dict):
 	process = frame.GetThread().GetProcess()
-	# print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
+	print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
 	Process.objects[process.id].handleBreakpoint(frame, bp_loc)
 
 def callProcessHandleBp(frame, bp_loc, dict):
@@ -210,10 +210,16 @@ class NamedTracePoint(TracePoint):
 		def levelOut(tag):
 			GlobalContext.levels[tag] = GlobalContext.levels.get(tag, 0) - 1
 			return "%s %d" % (tag, GlobalContext.levels[tag])
+		def output(str):
+			if not hasattr(GlobalContext, "output"):
+				GlobalContext.output = open("t-out.txt", "w")
+			GlobalContext.output.write(str)
+			return "%d characters written" % len(str)
 		# Somehow eval gets r printed by itself (???)
+		# That must be a problem for -o option
 		r = eval(c, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
-			m=getMemory,
+			m=getMemory, o=output,
 			g=GlobalContext,
 			x=xd,
 			vi=vi, vi0c=vi0c, v=v,
@@ -460,15 +466,19 @@ class Process(Util):
 			
 	def handleBreakpoint(self, frame, bp_loc):
 		tr = self.breakpoints.get(frame.pc)
-		if tr is None and bp_loc is None:
+		if 0 and tr is None and bp_loc is None:
 			print("stopped in '%s'" % frame.name)
-		tr = tr or self.breakpoints[frame.name]
+		try:
+			tr = tr or self.breakpoints[frame.name]
+		except KeyError:
+			return False
 		if tr.filterAccepts(frame, self):
 			if hasattr(tr, "trace2"):
 				tr.trace2(frame, self)
 			else:
 				self.printStack(frame)
 				tr.trace(frame, self.process, self.error)
+		return True
 
 	def traceSsl(self):
 		if 0:
@@ -499,7 +509,7 @@ class Process(Util):
 			loc = b.GetLocationAtIndex(i)
 			print("Location %s" % loc)
 			self.breakpoints[loc.GetLoadAddress()] = t
-		b.SetScriptCallbackFunction("callProcessHandleBp2")
+		b.SetScriptCallbackFunction("qqqqcallProcessHandleBp2")
 
 # /// Thread stop reasons.
 # enum StopReason {
@@ -516,7 +526,7 @@ class Process(Util):
 #  eStopReasonInstrumentation
 #};
 
-	def getBpFrame(self):
+	def getBpFrame(self, ev):
 		# What didn't work:
 		# frame = self.process.selected_thread.GetFrameAtIndex(0)
 		# frame = lldb.SBThread.GetStackFrameFromEvent(ev)
@@ -524,7 +534,6 @@ class Process(Util):
 		#
 		# This hangs on Linux
 		# for t in self.process.thread:
-		print("%d threads" % self.process.GetNumThreads())
 		for tn in range(self.process.GetNumThreads()):
 			t = self.process.GetThreadAtIndex(tn)
 			# This worked on Linux:
@@ -532,14 +541,14 @@ class Process(Util):
 			if t is None:
 				print("Thread %d is '%s'" % (tn, t))
 				continue
-			print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+			# print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
 			# Worked on Linux
 			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
 				return t.GetFrameAtIndex(0)
 			# Should work on Mac...
 			if 0 and t.GetStopReason() == lldb.eStopReasonSignal:
 				return t.GetFrameAtIndex(0)
-		raise Exception("No bp frame...")
+		return None
 
 	def runTrace(self):
 		if len(self.breakpoints) == 0:
@@ -573,8 +582,10 @@ class Process(Util):
 				# On Mac handleBreakpoint is called by attached script
 				# (not on Linux) 
 				if tn != -1 and sys.platform != "darwin":
-					frame = self.getBpFrame()
-					self.handleBreakpoint(frame, None)
+					tn = -1
+					frame = self.getBpFrame(ev)
+					if not frame or not self.handleBreakpoint(frame, None):
+						print("Bad stop frame='%s'" % frame)
 				self.process.Continue()
 			elif state == lldb.eStateRunning:
 				pass
@@ -584,6 +595,11 @@ class Process(Util):
 			else:
 				sys.stderr.write(
 					"event=%s\n" % lldb.SBDebugger.StateAsCString(state))
+
+	def dumpThreads(self):
+		for tn in range(self.process.GetNumThreads()):
+			t = self.process.GetThreadAtIndex(tn)
+			print("tid=%d reason=%d '%s'" % (t.id, t.GetStopReason(), t))
 
 	def breakAtEveryEntryPointOfModule(self, name):
 		m = self.target.module[name]
