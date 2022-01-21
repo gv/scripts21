@@ -70,22 +70,26 @@ class TracePoint(Util):
 	instancesById = {}
 
 	def __init__(self):
+		self.count = 0
 		self.debuggerBps = []
 
 	def getId(self):
 		if hasattr(self, "id"):
 			return self.id
-		self.count = 0
 		if self.symbolName:
 			for c in reversed(self.symbolName):
 				if c in self.instancesById:
 					continue
-				self.id = c
-				self.instancesById[c] = self
+				self.setId(c)
 				return c
 		self.id = "!"
 		return self.id
-	
+
+	def setId(self, c):
+		self.id = c
+		self.instancesById[c] = self
+		return self
+
 	def removeInvalidFunctions(self, ff):
 		result = []
 		for i in range(len(ff)):
@@ -147,10 +151,14 @@ class NamedTracePoint(TracePoint):
 		self.commands = []
 		self.filters = []
 		self.calls = None
+		self.stackEnabled = True
 		parts = name.split("#")
 		if len(parts) > 1:
 			name = parts[0]
 			self.commands = [x.strip() for x in parts[1:]]
+			if self.commands[0] == "":
+				self.stackEnabled = False
+				self.commands = self.commands[1:]
 		parts = name.split("@")
 		if len(parts) > 1:
 			name = parts[0]
@@ -171,10 +179,10 @@ class NamedTracePoint(TracePoint):
 		return self
 
 	def getAddrs(self, target, process):
+		if self.addr:
+			return [self.addr]
 		if not self.nameIsFull:
 			return [None]
-		if self.addr:
-			return addr
 		func = self.getFunc(self.symbolName, target)
 		if not self.calls:
 			return [self.getAddrOf(self.symbolName, target)]
@@ -219,7 +227,6 @@ class NamedTracePoint(TracePoint):
 		return re.sub(r"\$\$([a-z]{3})", getReg, cmd)
 
 	def runScript(self, frame, cmd):
-		c = compile(cmd, cmd, "single")
 		error = lldb.SBError()
 		def getMemory(start, size):
 			s = frame.thread.process.ReadMemory(start, size, error)
@@ -249,9 +256,9 @@ class NamedTracePoint(TracePoint):
 			return struct.unpack(f2, getMemory(ptr, struct.calcsize(f2)))
 		def icu(ptr):
 			buf = getMemory(ptr, 32)
-			flags, length, start = struct.unpack("qixxxxP", buf[8:])
+			flags, length, start = struct.unpack("HxxxxxxixxxxP", buf[8:])
 			if flags & 2:
-				return bytes(buf[10:]).decode("utf-16")
+				return bytes(buf[10:(10+(flags>>4))]).decode("utf-16")
 			return bytes(getMemory(start, (length - 1) * 2)).decode("utf-16")
 		def levelIn(tag):
 			GlobalContext.levels[tag] = GlobalContext.levels.get(tag, 0) + 1
@@ -264,9 +271,7 @@ class NamedTracePoint(TracePoint):
 				GlobalContext.output = open("t-out.txt", "w")
 			GlobalContext.output.write(str)
 			return "%d characters written" % len(str)
-		# Somehow eval gets r printed by itself (???)
-		# That must be a problem for -o option
-		r = eval(c, {}, dict(
+		r = eval(cmd, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
 			m=getMemory, o=output,
 			g=GlobalContext,
@@ -274,7 +279,7 @@ class NamedTracePoint(TracePoint):
 			vi=vi, vi0c=vi0c, v=v,
 			icu=icu,
 			levelIn=levelIn, levelOut=levelOut))
-		# print("result: %s" % r)
+		return r
 
 	def filterAccepts(self, frame, toolProc):
 		if 1:
@@ -294,18 +299,20 @@ class NamedTracePoint(TracePoint):
 
 	def trace2(self, frame, toolProc):
 		self.count += 1
-		if 1 or not self.commands:
+		if self.stackEnabled:
 			toolProc.printStack(frame)
 		if self.commands:
 			toolProc.process.SetSelectedThread(frame.thread)
 			for cmd in self.commands:
 				c2 = self.substCommand(frame, cmd)
-				sys.stdout.write("%s%d %s= " % (
+				toolProc.write("%s%d %s= " % (
 					self.id, self.count, rightLimited(c2, 40)))
 				if re.match(".*[(]", c2):
-					self.runScript(frame, c2)
+					r = self.runScript(frame, c2)
+					toolProc.print("%s" % r)
 				else:
 					toolProc.debugger.HandleCommand(c2)
+					toolProc.writeToLog("TODO Copy command output here\n")
 		else:
 			sys.stdout.write("trace '%s'\n" % self.symbolName)
 
@@ -459,6 +466,19 @@ class Process(Util):
 		self.tasksBySp = {}
 		self.fltMap = {}
 		self.filterNames = set()
+		self.output = self.options.output and open(self.options.output, "w")
+
+	def write(self, msg):
+		sys.stdout.write(msg)
+		self.writeToLog(msg)
+
+	def writeToLog(self, msg):
+		if self.output:
+			self.output.write(msg)
+			self.output.flush()
+
+	def print(self, msg):
+		self.write(msg + "\n")
 
 	def addTask(self, sp, task):
 		if 0 and sp in self.tasksBySp:
@@ -521,7 +541,7 @@ class Process(Util):
 			if sl and name:
 				name = name.split("(")[0]
 			sys.stderr.write("\r")
-			print("%7s %16x %s%s" % (
+			self.print("%7s %16x %s%s" % (
 				head, f.addr.GetLoadAddress(self.target),
 				self.printImage and (f.module.file.basename + " ") or "",
 				name) + sl)
@@ -594,17 +614,17 @@ class Process(Util):
 		id = t.getId()
 		if addr:
 			self.breakpoints[addr] = t
-			print("Setting bp '%s' to %X" % (t.id, addr))
+			self.print("Setting bp '%s' to %X" % (t.id, addr))
 			b = self.target.BreakpointCreateByAddress(addr)
 		else:
 			self.breakpoints[t.symbolName] = t
-			print("Setting bp to '%s'" % t.symbolName)
+			self.print("Setting bp to '%s'" % t.symbolName)
 			b = self.target.BreakpointCreateByName(t.symbolName)
 		if b.num_locations == 0:
 			raise Exception("No locations for BP %s" % b)
 		for i in range(b.num_locations):
 			loc = b.GetLocationAtIndex(i)
-			print("Location %s" % loc)
+			self.print("Location %s" % loc)
 			self.breakpoints[loc.GetLoadAddress()] = t
 		# Does not get called on Linux
 		b.SetScriptCallbackFunction("callProcessHandleBp2")
@@ -787,6 +807,7 @@ class Tool:
 	def traceAll(self, process, functions):
 		if self.options.ssl:
 			return process.traceSsl()
+		idChar = "a"
 		for expr in functions:
 			if expr.endswith(".dylib"):
 				process.breakAtEveryEntryPointOfModule(expr)
@@ -795,6 +816,11 @@ class Tool:
 					point = RetTracePoint().parse(expr[1:])
 				else:
 					point = NamedTracePoint().parse(expr)
+				# Need to set id here so predictable order exists:
+				# arg1 = "a" arg2 = "b" etc.
+				if point.addr:
+					point.setId(idChar)
+					idChar = chr(ord(idChar) + 1)
 				if point.symbolName and "*" in point.symbolName:
 					names = []
 					for m in process.target.modules:
