@@ -69,6 +69,9 @@ class Util:
 class TracePoint(Util):
 	instancesById = {}
 
+	def __init__(self):
+		self.debuggerBps = []
+
 	def getId(self):
 		if hasattr(self, "id"):
 			return self.id
@@ -92,7 +95,9 @@ class TracePoint(Util):
 			result += [ff[i]]
 		return result
 	
-	def getAddrOf(self, name, target):
+	def getFunc(self, name, target):
+		# TODO
+		# FF returns imprecise matches
 		ff = target.FindFunctions(name)
 		if len(ff) == 0:
 			return 0
@@ -111,15 +116,19 @@ class TracePoint(Util):
 			ff[0].symbol.addr.offset, ff[0].symbol.addr.module))
 		if not ff[0].symbol.addr.IsValid():
 			raise Exception("not ff[0].symbol.addr.IsValid()")
-		# load_addr doesn't work bc target is not "current"
-		return ff[0].symbol.addr.GetLoadAddress(target)
+		return ff[0].symbol
 
-	def getAddr(self, target, process):
+	def getAddrOf(self, name, target):
+		# load_addr doesn't work bc target is not "current"
+		return self.getFunc(name, target).addr.GetLoadAddress(target)
+
+	def getAddrs(self, target, process):
 		if self.addr:
-			return self.addr
+			return [self.addr]
 		if self.nameIsFull:
-			return self.getAddrOf(self.symbolName, target)
-		return None
+			return [self.getAddrOf(self.symbolName, target)]
+		# `None` means set BP by name 
+		return [None]
 
 	def filterAccepts(self, frame, toolProc):
 		return True
@@ -137,6 +146,7 @@ class NamedTracePoint(TracePoint):
 		self.symbolName = None
 		self.commands = []
 		self.filters = []
+		self.calls = None
 		parts = name.split("#")
 		if len(parts) > 1:
 			name = parts[0]
@@ -149,11 +159,49 @@ class NamedTracePoint(TracePoint):
 			self.addr = int(name, 16)
 			return self
 		self.nameIsFull = not name.startswith("~")
-		if self.nameIsFull:
-			self.symbolName = name
-		else:
-			self.symbolName = name[1:]
+		if not self.nameIsFull:
+			name = name[1:]
+		parts = name.split(">")
+		if len(parts) > 1:
+			if not self.nameIsFull:
+				raise Exception("No calls in BreakpointCreateByName")
+			name = parts[0]
+			self.calls = parts[1:]
+		self.symbolName = name
 		return self
+
+	def getAddrs(self, target, process):
+		if not self.nameIsFull:
+			return [None]
+		if self.addr:
+			return addr
+		func = self.getFunc(self.symbolName, target)
+		if not self.calls:
+			return [self.getAddrOf(self.symbolName, target)]
+		addrs = []
+		availableCalls = set()
+		instructions = func.GetInstructions(target)
+		for ins in instructions:
+			if ins.GetMnemonic(target) == "callq" and\
+			   (not "%" in ins.GetOperands(target)):
+				p = int(ins.GetOperands(target), 16)
+				arg = lldb.SBAddress(p, target)
+				cmt = arg.GetSymbol()
+				cmt = cmt and cmt.name
+				for template in self.calls:
+					if fnmatch.fnmatch(cmt, template):
+						addrs.append(ins.GetAddress().GetLoadAddress(target))
+				availableCalls.add(cmt)
+			else:
+				cmt = ins.GetComment(target)
+			# print("%8s %s ; %s" % (
+			# 	ins.GetMnemonic(target), ins.GetOperands(target), cmt))
+		if not addrs:
+			for name in availableCalls:
+				print(" available: '%s'" % name)
+			raise Exception("Calls %s not found in %s" % (
+				self.calls, func.name))
+		
 
 	def copy(self, other):
 		self.addr = other.addr
@@ -262,9 +310,6 @@ class NamedTracePoint(TracePoint):
 			sys.stdout.write("trace '%s'\n" % self.symbolName)
 
 class FilterTracePoint(NamedTracePoint):
-	def __init__(self, name):
-		self.parse(name)
-
 	def trace2(self, frame, toolProc):
 		v = toolProc.fltMap.get(frame.thread.id, [])
 		v.append(self.name)
@@ -294,8 +339,8 @@ class RetTracePoint(NamedTracePoint):
 	
 
 class SSLWriteTrace(TracePoint):
-	def getAddr(self, target, process):
-		return self.getAddrOf("SSLWrite", target) + 254
+	def getAddrs(self, target, process):
+		return [self.getAddrOf("SSLWrite", target) + 254]
 
 	def trace(self, frame, process, error):
 		buf = frame.reg["r12"].GetValueAsUnsigned()
@@ -305,8 +350,8 @@ class SSLWriteTrace(TracePoint):
 
 
 class SSLReadTrace(TracePoint):
-	def getAddr(self, target, process):
-		return self.getAddrOf("SSLRead", target) + 613
+	def getAddrs(self, target, process):
+		return [self.getAddrOf("SSLRead", target) + 613]
 
 	def trace(self, frame, process, error):
 		# pointer to resulting number of bytes is in arg3=rcx at start
@@ -532,15 +577,20 @@ class Process(Util):
 			for f in t.filters:
 				if not f in activeFilters:
 					active = False
-			if t.debuggerBp.IsEnabled() and not active:
-				print("Disabling '%s'" % t.name)
-				t.debuggerBp.SetEnabled(False)
-			if active and not t.debuggerBp.IsEnabled():
-				print("Enabling '%s'" % t.name)
-				t.debuggerBp.SetEnabled(True)
+			for dbp in t.debuggerBps:
+				if dbp.IsEnabled() and not active:
+					print("Disabling '%s'" % t.name)
+					dbp.SetEnabled(False)
+				if active and not dbp.IsEnabled():
+					print("Enabling '%s'" % t.name)
+					dbp.SetEnabled(True)
 
 	def setBp(self, t):
-		addr = t.getAddr(self.target, self.process)
+		addrs = t.getAddrs(self.target, self.process)
+		for addr in addrs:
+			self.addBpForAddr(t, addr)
+
+	def addBpForAddr(self, t, addr):
 		id = t.getId()
 		if addr:
 			self.breakpoints[addr] = t
@@ -558,11 +608,11 @@ class Process(Util):
 			self.breakpoints[loc.GetLoadAddress()] = t
 		# Does not get called on Linux
 		b.SetScriptCallbackFunction("callProcessHandleBp2")
-		t.debuggerBp = b
+		t.debuggerBps.append(b)
 		if 1:
 			for f in t.filters:
 				if not f in self.filterNames:
-					self.setBp(FilterTracePoint(f))
+					self.setBp(FilterTracePoint().parse(f))
 					self.filterNames.add(f)
 
 # /// Thread stop reasons.
@@ -718,19 +768,21 @@ class Tool:
 			sys.stderr.write("Need PID or command\n")
 			sys.exit(1)
 		process = Process(self.options).load(pid, launch)
-		if self.options.tid:
-			try:
-				process.inspect(tid)
-			except Exception:
-				print("exception in inspect: %s" % sys.exc_info()[1])
-			self.traceAll(process, functions)
-		elif self.options.list:
-			process.listSymbols(False)
-		elif self.options.list2:
-			process.listSymbols(True)
-		else:
-			self.traceAll(process, functions)
-		process.unload()
+		try:
+			if self.options.tid:
+				try:
+					process.inspect(tid)
+				except Exception:
+					print("exception in inspect: %s" % sys.exc_info()[1])
+					self.traceAll(process, functions)
+			elif self.options.list:
+				process.listSymbols(False)
+			elif self.options.list2:
+				process.listSymbols(True)
+			else:
+				self.traceAll(process, functions)
+		finally:
+			process.unload()
 
 	def traceAll(self, process, functions):
 		if self.options.ssl:
