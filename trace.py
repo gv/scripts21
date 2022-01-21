@@ -132,6 +132,7 @@ GlobalContext = Context()
 
 class NamedTracePoint(TracePoint):
 	def parse(self, name, addr=None):
+		self.name = name
 		self.addr = addr
 		self.symbolName = None
 		self.commands = []
@@ -228,6 +229,12 @@ class NamedTracePoint(TracePoint):
 		# print("result: %s" % r)
 
 	def filterAccepts(self, frame, toolProc):
+		if 1:
+			v = toolProc.fltMap.get(frame.thread.id, [])
+			for filter in self.filters:
+				if filter not in v:
+					return False
+			return True
 		for filter in self.filters:
 			for f in frame.thread.frames:
 				if f.addr.symbol.name and\
@@ -253,6 +260,28 @@ class NamedTracePoint(TracePoint):
 					toolProc.debugger.HandleCommand(c2)
 		else:
 			sys.stdout.write("trace '%s'\n" % self.symbolName)
+
+class FilterTracePoint(NamedTracePoint):
+	def __init__(self, name):
+		self.parse(name)
+
+	def trace2(self, frame, toolProc):
+		v = toolProc.fltMap.get(frame.thread.id, [])
+		v.append(self.name)
+		toolProc.fltMap[frame.thread.id] = v
+		toolProc.addTask(frame.sp + psize, self)
+		toolProc.updateBreakpoints()
+		frame.thread.StepOut()
+
+	def runDeferredTask(self, toolProc, frame):
+		v = toolProc.fltMap.get(frame.thread.id, [])
+		if v[-1] == self.name:
+			v = v[:-1]
+			toolProc.fltMap[frame.thread.id] = v
+			toolProc.updateBreakpoints()
+		else:
+			print("Warning: out of '%s' but last filter is '%s'" % (
+				self.name, v[-1]))
 
 class RetTracePoint(NamedTracePoint):
 	def trace2(self, frame, toolProc):
@@ -383,9 +412,11 @@ class Process(Util):
 			if not self.debugger.EnableLog("lldb", ["dyld", "target"]):
 				raise Exception("Bad log")
 		self.tasksBySp = {}
+		self.fltMap = {}
+		self.filterNames = set()
 
 	def addTask(self, sp, task):
-		if sp in self.tasksBySp:
+		if 0 and sp in self.tasksBySp:
 			raise Exception("%X already here!" % sp)
 		self.tasksBySp[sp] = task
 
@@ -492,6 +523,22 @@ class Process(Util):
 		self.setBp(SSLWriteTrace())
 		self.runTrace()
 
+	def updateBreakpoints(self):
+		activeFilters = []
+		for v in self.fltMap.values():
+			activeFilters += v
+		for t in self.breakpoints.values():
+			active = True
+			for f in t.filters:
+				if not f in activeFilters:
+					active = False
+			if t.debuggerBp.IsEnabled() and not active:
+				print("Disabling '%s'" % t.name)
+				t.debuggerBp.SetEnabled(False)
+			if active and not t.debuggerBp.IsEnabled():
+				print("Enabling '%s'" % t.name)
+				t.debuggerBp.SetEnabled(True)
+
 	def setBp(self, t):
 		addr = t.getAddr(self.target, self.process)
 		id = t.getId()
@@ -509,7 +556,14 @@ class Process(Util):
 			loc = b.GetLocationAtIndex(i)
 			print("Location %s" % loc)
 			self.breakpoints[loc.GetLoadAddress()] = t
-		b.SetScriptCallbackFunction("qqqqcallProcessHandleBp2")
+		# Does not get called on Linux
+		b.SetScriptCallbackFunction("callProcessHandleBp2")
+		t.debuggerBp = b
+		if 1:
+			for f in t.filters:
+				if not f in self.filterNames:
+					self.setBp(FilterTracePoint(f))
+					self.filterNames.add(f)
 
 # /// Thread stop reasons.
 # enum StopReason {
@@ -553,6 +607,7 @@ class Process(Util):
 	def runTrace(self):
 		if len(self.breakpoints) == 0:
 			raise Exception("No breakpoints set!")
+		self.updateBreakpoints()
 		self.listener = self.debugger.GetListener()
 		self.process.GetBroadcaster().AddListener(
 			self.listener,
