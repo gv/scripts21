@@ -199,6 +199,10 @@
  (let ((q (find-tag-default)))
   (call-process "open" nil "*Messages*" t
    (format "https://www.google.com/search?q=%s" q))))
+
+(defun open () (interactive)
+ (call-process "open" nil "*Messages*" t (buffer-file-name)))
+
 ;;
 ;;    APPEARANCE
 ;;    ``````````
@@ -335,6 +339,8 @@ next grep is started"
    (get-buffer-process (current-buffer)) nil)
   ;; get '-' character out of "symbol" class
   (modify-syntax-entry ?- ".")
+  (modify-syntax-entry ?< ".")
+  (modify-syntax-entry ?> ".")
   (vg-message "Char classes:-=%s" (string (char-syntax ?-))))
 (add-hook 'compilation-start-hook 'vg-tune-compilation)
 

@@ -189,9 +189,39 @@ class Input:
 			e.GetEndAddress().GetOffset() - e.GetStartAddress().GetOffset(),
 			e.GetFileSpec(), e.GetLine()))
 
+	def getFunctions(self, context):
+		for s in self.module.symbols:
+			if s.GetStartAddress().IsValid():
+				if s.GetStartAddress().GetSection().name == ".text":
+					context.processSymbol(s)
+
+	def getInstructions(self, context):
+		text = self.getCodeSection()
+		addr = lldb.SBAddress(text, 0)
+		while addr.GetOffset() < text.GetFileByteSize():
+			size = 0
+			code = self.target.ReadInstructions(addr, 100)
+			for ins in code:
+				context.processInstruction(ins, self)
+				size += ins.GetByteSize()
+			if size == 0:
+				size = 1 # idk?
+			addr.OffsetAddress(size);
+			context.progress(size)
+
 class FileSpecAndPrefixes:
 	def __init__(self):
 		self.spec = self.prefixes = None
+
+class KeyFromSpec:
+	def __init__(self, context, spec):
+		self.context = context
+		self.spec = spec
+
+	def getPath(self):
+		return "%s/%s" % (
+			self.context.normalizePath(self.spec.GetDirectory()),
+			self.spec.GetFilename())
 		
 class Context:
 	__slots__ = (
@@ -225,13 +255,15 @@ class Context:
 		self.processedBytes += size
 		if self.processedBytes <= self.progressNext:
 			return
-		sys.stderr.write("	%16s / %16s (%3d%%) %s=%16s unknown=%16s\r" % (
+		sys.stderr.write("	%16s / %16s (%3d%%)" % (
 			nn(self.processedBytes), nn(self.allCode.size),
-			self.processedBytes * 100 / self.allCode.size,
+			self.processedBytes * 100 / self.allCode.size))
+		if not self.args.calls:
+			sys.stderr.write(" %s=%16s" % (
 			self.args.unknown and "no symbols" or "other",
 			self.args.unknown and nn(self.noSymbols.size) or\
-			nn(self.other.size),
-			nn(self.unknown.size)))
+			nn(self.other.size)))
+		sys.stderr.write(" unknown=%16s\r" % nn(self.unknown.size))
 		self.progressNext += 2048
 
 	def prepare(self, inputs):
@@ -494,6 +526,114 @@ class Lines(Context):
 			sys.stderr.write("path='%s' line=%d\n" % (
 				e.file.fullpath, e.line))
 			raise
+
+class SymbolStat:
+	tpl1 = re.compile(r"<(\w+)>")
+	def __init__(self, symbol, args):
+		self.name = symbol.name
+		if 1:
+			id = "A"
+			map = {}
+			for m in self.tpl1.finditer(self.name):
+				arg = m.group(1)
+				if not arg in map:
+					map[arg] = id
+			for arg in map.keys():
+				self.name = self.name.replace(arg, map[arg])
+		self.size = Calls.getSize(None, symbol)
+		self.count = 0
+
+	def getTotalSize(self):
+		return self.count * self.size
+
+	def getCount(self):
+		return self.count
+
+class Calls(Context):
+	def prepare(self, inputs):
+		self.symbolInfo = {}
+		self.unknown = self.unknownSrc = Count("<unknown source>")
+		self.unknownTgt = Count("<unknown target>")
+		self.calls = Count("<call instructions>")
+		self.instructions = Count("<total instructions>")
+		for input in inputs:
+			if self.args.symbols:
+				input.run = input.getFunctions
+			else:
+				input.run = input.getInstructions
+				sec = input.getCodeSection()
+				input.target.SetSectionLoadAddress(sec, sec.GetFileAddress())
+
+	def processSymbol(self, s):
+		if self.args.PREFIX:
+			if not s.name:
+				return
+			found = None
+			for str in self.args.PREFIX:
+				if str in s.name:
+					found = str
+					break
+			if not found:
+				return
+		if self.args.all:
+			print("%16X %6d %2d %s%s" % (
+				s.GetStartAddress().GetOffset(), self.getSize(s),
+				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or ""))
+			return
+		if not s.name:
+			return
+		ss = SymbolStat(s, self.args)
+		key = "%d %s" % (self.getSize(s), ss.name)
+		t = self.symbolInfo.get(key)
+		if not t:
+			self.symbolInfo[key] = t = ss
+		t.count += 1
+
+	def processInstruction(self, ins, input):
+		self.instructions.size += 1
+		command = ins.GetMnemonic(input.target)
+		if command != "callq":
+			return
+		right = ins.GetOperands(input.target)
+		if "%" in right:
+			return
+		v = int(right, 16)
+		arg = lldb.SBAddress(v, input.target)
+		src = self.getLocation(ins.addr, "%s:%d:")
+		target = self.getLocation(arg, " at %s:%d")
+		if not target:
+			self.unknownTgt.size += 1
+			target = ""
+		if src:
+			print("%s %s -> %s%s" % (
+				src, ins.addr.symbol.name, arg.symbol.name, target))
+		else:
+			self.unknownSrc.size += 1
+
+	def getLocation(self, addr, fmt):
+		le = addr.line_entry
+		if not le.IsValid():
+			return None
+		return fmt % (
+			KeyFromSpec(self, le.GetFileSpec()).getPath(), le.GetLine())
+		
+	def report(self):
+		if not self.args.symbols:
+			self.reportCounts([
+				self.unknownSrc, self.unknownTgt, self.calls,
+				self.instructions])
+			return
+		functions = self.symbolInfo.values()
+		if self.args.verbose:
+			sys.stderr.write("Sorting %d functions...\n" % len(functions))
+		for s in sorted(functions, key=SymbolStat.getCount):
+			print("%10s %s" % (
+				"%d*%d" % (s.size, s.count), s.name))
+
+	def getSize(self, s):
+		return s.GetEndAddress().GetOffset() -\
+			s.GetStartAddress().GetOffset()
+
 		
 class Maps(Context):
 	secPattern = r"([.][^\s]+) +0x([0-9a-f]{8,16}) +0x([0-9a-f]+)"
@@ -627,11 +767,18 @@ parser.add_argument(
 parser.add_argument(
 	"--git", help="Get file list + contents form REVISION (-f)")
 parser.add_argument(
+	"--calls", action="store_true", help="Get function calls (non virtual)")
+parser.add_argument(
+	"--symbols", action="store_true", help="Get symbol sizes and repeat counts")
+parser.add_argument(
+	"--all", action="store_true", help="Print symbol data")
+parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
 args = parser.parse_args()
 if args.instructions or args.git:
 	args.file = True
-(args.map and Maps or args.file and Lines or Context)(args).run() 
+(args.calls and Calls or\
+ args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))
