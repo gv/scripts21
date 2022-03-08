@@ -82,6 +82,7 @@ class QemuCommands(VbKeys):
 		"/": "slash",
 		"-": "minus",
 		":": "shift-semicolon",
+		"+": "shift-equal",
 		"\\": "backslash"
 	}
 		
