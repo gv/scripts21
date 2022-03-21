@@ -1,6 +1,26 @@
 #!/usr/bin/env python3
+"""Trace function calls & print stacks
+
+Tracepoint syntax:
+
+(NAME_GLOB*[>TARGET]|~NAME|0x<addr>)[@FILTER[@...]][#COMMAND[#...]]
+
+NAME_GLOB*: BP on every symbol with full name matching NAME_GLOB*
+ (nb: full name in C++ has `(arg list)` at the end)
+>TARGET: Set BPs an all `call` instructions to this target inside 
+ NAME_GLOB* functions instead of function entry
+~NAME: Use debugger API that sets BP by name
+@FILTER: Only trace when function FILTER is in the stack
+#COMMAND: Run debugger command on each trace. 
+ If command contains parens (or -p option is on), it's a python script.
+ For available calls & vars see source
+
+Bugs:
+ Call stack is printed with most immediate function at the bottom, 
+ instead of at the top like debuggers do...
+
+"""
 from __future__ import print_function
-"Trace function calls & print stacks"
 import argparse, re, sys, os, subprocess, json, fnmatch, struct
 try:
 	import lldb
@@ -104,11 +124,11 @@ class TracePoint(Util):
 		# FF returns imprecise matches
 		ff = target.FindFunctions(name)
 		if len(ff) == 0:
-			return 0
+			return None
 		if len(ff) != 1:
 			ff = self.removeInvalidFunctions(ff)
 		if len(ff) == 0:
-			return 0
+			return None
 		if len(ff) != 1:
 			raise Exception("%d functions" % len(ff))
 		if not ff[0].IsValid():
@@ -124,12 +144,24 @@ class TracePoint(Util):
 
 	def getAddrOf(self, name, target):
 		# load_addr doesn't work bc target is not "current"
-		return self.getFunc(name, target).addr.GetLoadAddress(target)
+		f = self.getFunc(name, target)
+		if not f:
+			raise Exception("No function '%s'" % name)
+		return f.addr.GetLoadAddress(target)
 
 	def getAddrs(self, target, process):
 		if self.addr:
 			return [self.addr]
 		if self.nameIsFull:
+			if "*" in self.symbolName:
+				addrs = []
+				for m in target.modules:
+					for s in m:
+						if not s.name:
+							continue
+						if fnmatch.fnmatch(s.name, self.symbolName):
+							addrs.append(s.addr.GetLoadAddress(target))
+				return addrs
 			return [self.getAddrOf(self.symbolName, target)]
 		# `None` means set BP by name 
 		return [None]
@@ -140,6 +172,7 @@ class TracePoint(Util):
 class Context:
 	def __init__(self):
 		self.levels = {}
+		self.a = 0
 
 GlobalContext = Context()
 
@@ -185,7 +218,7 @@ class NamedTracePoint(TracePoint):
 			return [None]
 		func = self.getFunc(self.symbolName, target)
 		if not self.calls:
-			return [self.getAddrOf(self.symbolName, target)]
+			return TracePoint.getAddrs(self, target, process)
 		addrs = []
 		availableCalls = set()
 		instructions = func.GetInstructions(target)
@@ -209,7 +242,7 @@ class NamedTracePoint(TracePoint):
 				print(" available: '%s'" % name)
 			raise Exception("Calls %s not found in %s" % (
 				self.calls, func.name))
-		
+		return addrs
 
 	def copy(self, other):
 		self.addr = other.addr
@@ -271,6 +304,8 @@ class NamedTracePoint(TracePoint):
 				GlobalContext.output = open("t-out.txt", "w")
 			GlobalContext.output.write(str)
 			return "%d characters written" % len(str)
+		def level(tag):
+			return GlobalContext.levels.get(tag, 0)
 		r = eval(cmd, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
 			m=getMemory, o=output,
@@ -278,7 +313,7 @@ class NamedTracePoint(TracePoint):
 			x=xd,
 			vi=vi, vi0c=vi0c, v=v,
 			icu=icu,
-			levelIn=levelIn, levelOut=levelOut))
+			levelIn=levelIn, levelOut=levelOut, level=level))
 		return r
 
 	def filterAccepts(self, frame, toolProc):
@@ -307,17 +342,28 @@ class NamedTracePoint(TracePoint):
 				c2 = self.substCommand(frame, cmd)
 				toolProc.write("%s%d %s= " % (
 					self.id, self.count, rightLimited(c2, 40)))
-				if re.match(".*[(]", c2):
+				if toolProc.options.python or re.match(".*([(]|[+]=)", c2):
 					r = self.runScript(frame, c2)
 					toolProc.print("%s" % r)
 				else:
 					toolProc.debugger.HandleCommand(c2)
 					toolProc.writeToLog("TODO Copy command output here\n")
 		else:
-			sys.stdout.write("trace '%s'\n" % self.symbolName)
+			toolProc.print("trace '%s'" % self.symbolName)
 
 class FilterTracePoint(NamedTracePoint):
+	def parse(self, name, addr=None):
+		NamedTracePoint.parse(self, name, addr)
+		parts = self.symbolName.split("-", 1)
+		self.symbolName = parts[0]
+		self.condition = len(parts) > 1 and parts[1]
+		return self
+	
 	def trace2(self, frame, toolProc):
+		if self.condition:
+			if not self.runScript(
+					frame, self.substCommand(frame, self.condition)):
+				return
 		v = toolProc.fltMap.get(frame.thread.id, [])
 		v.append(self.name)
 		toolProc.fltMap[frame.thread.id] = v
@@ -521,7 +567,12 @@ class Process(Util):
 		if not self.stacksEnabled:
 			return
 		skipStart = None
-		for i in range(frame.thread.GetNumFrames()):
+		if self.options.slen:
+			start = max(
+				frame.thread.GetNumFrames() - int(self.options.slen), 0)
+		else:
+			start = 0
+		for i in range(start, frame.thread.GetNumFrames()):
 			idx = frame.thread.GetNumFrames() - i - 1
 			f = frame.thread.frames[idx]
 			if i + 1 < len(self.lastPrintedStack) and\
@@ -821,8 +872,7 @@ class Tool:
 				if point.addr:
 					point.setId(idChar)
 					idChar = chr(ord(idChar) + 1)
-				if point.symbolName and "*" in point.symbolName:
-					names = []
+				if 0 and point.symbolName and "*" in point.symbolName:
 					for m in process.target.modules:
 						for s in m:
 							if s.name and fnmatch.fnmatch(
@@ -858,7 +908,8 @@ class Tool:
 				q.unload()
 		
 
-parser = argparse.ArgumentParser(description=__doc__)
+parser = argparse.ArgumentParser(
+	description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument(
 	"-l", "--list", action="store_true", help="List symbols in libs")
 parser.add_argument(
@@ -869,7 +920,7 @@ parser.add_argument(
 	"-d", "--with-dtrace",
 	help="Use collecttcp.d with STOP set to WITH_DTRACE")
 parser.add_argument(
-	"-s", "--ssl", action="store_true", help="Trace SSL reads & writes")
+	"-S", "--ssl", action="store_true", help="Trace SSL reads & writes")
 parser.add_argument(
 	"-r", "--launch", help="Launch command line with spaces")
 parser.add_argument(
@@ -877,6 +928,10 @@ parser.add_argument(
 	help="Trace handleEvent methods in every class and parse NSEvent structs")
 parser.add_argument(
 	"--output", "-o", help="Text output path")
+parser.add_argument(
+	"--python", "-p", action="store_true", help="Only python commands")
+parser.add_argument(
+	"--slen", "-s", help="Stack limit")
 #parser.add_argument(
 #	"--nolib", action="store_true",
 #	help="Set BPs in main executable only")

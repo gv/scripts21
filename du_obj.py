@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from __future__ import print_function
 "Analyze debug info and report .text size contribution per directory/file/line"
 import argparse, os, re, subprocess, sys, datetime
@@ -58,8 +58,10 @@ class Input:
 			   os.path.realpath(pdb):
 				raise Exception("Symbol file path must be '%s' but is '%s'" % (
 					pdb, self.module.GetSymbolFileSpec().fullpath))
-		sys.stderr.write("Module='%s' symbols='%s' %d CUs\n" % (
-			self.module.GetFileSpec(), self.module.GetSymbolFileSpec(),
+		sys.stderr.write("Module='%s' %d symbols in '%s' %d CUs\n" % (
+			self.module.GetFileSpec(),
+			self.module.GetNumSymbols(),
+			self.module.GetSymbolFileSpec(),
 			self.module.GetNumCompileUnits()))
 		# HACK & WORKAROUND!
 		# Without reading compile_units GetOrCreateCompiland doesn't get called
@@ -192,7 +194,8 @@ class Input:
 	def getFunctions(self, context):
 		for s in self.module.symbols:
 			if s.GetStartAddress().IsValid():
-				if s.GetStartAddress().GetSection().name == ".text":
+				if self.args.all or\
+				   s.GetStartAddress().GetSection().name == ".text":
 					context.processSymbol(s)
 
 	def getInstructions(self, context):
@@ -557,7 +560,7 @@ class Calls(Context):
 		self.calls = Count("<call instructions>")
 		self.instructions = Count("<total instructions>")
 		for input in inputs:
-			if self.args.symbols:
+			if self.args.symbols or self.args.all:
 				input.run = input.getFunctions
 			else:
 				input.run = input.getInstructions
@@ -576,9 +579,12 @@ class Calls(Context):
 			if not found:
 				return
 		if self.args.all:
-			print("%16X %6d %2d %s%s" % (
+			if not s.name:
+				return
+			print("%016X %6d %2d %s%s loc='%s'" % (
 				s.GetStartAddress().GetOffset(), self.getSize(s),
-				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or ""))
+				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or "",
+				self.getLocation(s.GetStartAddress(), "%s:%d")))
 			return
 		if not s.name:
 			return
@@ -778,7 +784,7 @@ parser.add_argument(
 args = parser.parse_args()
 if args.instructions or args.git:
 	args.file = True
-(args.calls and Calls or\
+((args.all or args.calls) and Calls or\
  args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))
