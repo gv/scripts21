@@ -266,7 +266,7 @@
 (prog1
   (load "../compact-blame/compact-blame.el")
   (setq compact-blame-bg1 "rainbow")
-  (setq compact-blame-bg2 "rainbow")
+  (setq compact-blame-bg2 "rainbow2")
   (setq compact-blame-format "%Y%x%.%#"))
 
 ;; for ViewSourceWith Firefox extension
