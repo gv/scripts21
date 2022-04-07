@@ -166,6 +166,7 @@
   (define-key global-map (kbd "C-\\")
    (lambda () (interactive) (vg-message "Keyboard language switch disabled")))
  (define-key global-map (kbd "s-g") 'google-at-point)
+ (define-key global-map (kbd "s-b") 'google-line)
  (define-key global-map [C-backspace] 'vg-backward-delete-word)
  (define-key global-map [M-backspace] 'vg-backward-delete-word)
   ;; latvian keyboard workaround 
@@ -199,6 +200,10 @@
  (let ((q (find-tag-default)))
   (call-process "open" nil "*Messages*" t
    (format "https://www.google.com/search?q=%s" q))))
+
+(defun google-line () (interactive)
+ (call-process "open" nil "*Messages*" t
+  (format "https://www.google.com/search?q=%s" (thing-at-point 'line))))
 
 (defun open () (interactive)
  (call-process "open" nil "*Messages*" t (buffer-file-name)))
