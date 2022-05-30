@@ -19,7 +19,7 @@ class RtfFile:
     def load(self):
         level = 0
         text = " ".join(open(self.path).read().split("\n"))
-        for m in re.finditer("([{}])([^{}]+)", text):
+        for m in re.finditer("([{}])([^{}]*)", text):
             b, t = m.group(1, 2)
             if b == "{":
                 level += 1
@@ -32,7 +32,9 @@ class RtfFile:
 
     def print(self):
         for b in self.blocks:
-            print(" " * (b.level - 1) + b.text)
+            head = " " * (b.level - 1) if b.level < 10 else\
+                "%d       " % b.level
+            print(head + b.text)
                 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("INPUT")

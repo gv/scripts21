@@ -512,7 +512,10 @@ class Process(Util):
 		self.tasksBySp = {}
 		self.fltMap = {}
 		self.filterNames = set()
-		self.output = self.options.output and open(self.options.output, "w")
+		self.output = None
+		if self.options.output:
+			self.output = open(self.options.output, "w")
+			self.output.write(" -*- mode: compilation -*-\n")
 
 	def write(self, msg):
 		sys.stdout.write(msg)
@@ -545,7 +548,7 @@ class Process(Util):
 			ai = lldb.SBAttachInfo(int(pid))
 			sys.stderr.write("Attaching pid=%d..." % ai.GetProcessID())
 		else:
-			ai = lldb.SBAttachInfo(pid, False)
+			ai = lldb.SBAttachInfo(pid, self.options.wait)
 			sys.stderr.write("Attaching name='%s'..." % pid)
 		if not launch:
 			self.process = self.check(self.target.Attach(ai, self.error))
@@ -932,6 +935,8 @@ parser.add_argument(
 	"--python", "-p", action="store_true", help="Only python commands")
 parser.add_argument(
 	"--slen", "-s", help="Stack limit")
+parser.add_argument(
+	"--wait", "-w", action="store_true", help="Wait if process doesn't exist")
 #parser.add_argument(
 #	"--nolib", action="store_true",
 #	help="Set BPs in main executable only")
