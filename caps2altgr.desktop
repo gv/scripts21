@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Repurpose Caps Lock key to use as AltGr
+Comment=For keyboards with no AltGr key. Shift-CapsLock should work as CapsLock
+Keywords=UMPC
+Icon=preferences-desktop-display
+Exec=xmodmap -e "clear lock" -e "keycode 66 = ISO_Level3_Shift Caps_Lock ISO_Next_Group Caps_Lock"
+Terminal=false
+Categories=GTK;Settings;HardwareSettings;
+StartupNotify=true
+X-MATE-Autostart-Phase=Application
+X-MATE-Autostart-Notify=true
