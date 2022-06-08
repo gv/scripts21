@@ -102,7 +102,7 @@
 (global-set-key [C-f]  'isearch-forward)
 (global-set-key [M-f7]  'find-name-dired)
 (global-set-key [C-tab]  'other-window)
-
+(global-set-key (kbd "C-=") 'switch-to-buffer)
 (global-set-key [A-end] 'end-of-buffer)
 (global-set-key [A-home] 'beginning-of-buffer)
 (global-set-key (kbd "A-k") 'kill-line)
@@ -127,6 +127,30 @@
 (global-set-key [A-M-up] 'pop-tag-mark)
 ; [A-M-/] didn't work
 (global-set-key (kbd "A-M-/") 'ft-next)
+(define-key global-map (kbd "s-[") 'backward-sexp)
+(define-key global-map (kbd "s-]") 'forward-sexp)
+(define-key global-map [M-up] 'backward-paragraph)
+(define-key global-map [M-down] 'forward-paragraph)
+(define-key global-map [s-home] 'beginning-of-buffer)
+(define-key global-map [s-end] 'end-of-buffer)
+(define-key global-map [s-up] 'previous-error)
+(define-key global-map [s-down] 'next-error)
+(define-key global-map [M-s-up] 'pop-tag-mark)
+(define-key global-map [M-s-down] 'ft-at-point)
+(define-key global-map [C-M-s-down] 'ft-other-window-at-point)
+(define-key global-map [M-s-right] 'ft-other-window-at-point)
+(define-key global-map (kbd "M-s-÷") 'ft-next)
+;; [s-\`] [s-/] do not work!
+(define-key global-map (kbd "s-/") 'dabbrev-expand)
+(define-key global-map (kbd "s-`") 'next-multiframe-window)
+(define-key global-map (kbd "C-\\")
+ (lambda () (interactive) (vg-message "Keyboard language switch disabled")))
+(define-key global-map (kbd "s-g") 'google-at-point)
+(define-key global-map (kbd "s-b") 'google-line)
+(define-key global-map (kbd "s-r") 'revert-buffer)
+(define-key global-map (kbd "s-k") 'kill-current-buffer)
+(define-key global-map [C-backspace] 'vg-backward-delete-word)
+(define-key global-map [M-backspace] 'vg-backward-delete-word)
 
 (when (fboundp 'osx-key-mode)
   (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -147,28 +171,6 @@
   )
 
 (when (and (not (fboundp 'osx-key-mode)) (equal window-system 'ns))
- (define-key global-map (kbd "s-[") 'backward-sexp)
- (define-key global-map (kbd "s-]") 'forward-sexp)
-  (define-key global-map [M-up] 'backward-paragraph)
-  (define-key global-map [M-down] 'forward-paragraph)
-  (define-key global-map [s-home] 'beginning-of-buffer)
-  (define-key global-map [s-end] 'end-of-buffer)
-  (define-key global-map [s-up] 'previous-error)
-  (define-key global-map [s-down] 'next-error)
-  (define-key global-map [M-s-up] 'pop-tag-mark)
-  (define-key global-map [M-s-down] 'ft-at-point)
-  (define-key global-map [C-M-s-down] 'ft-other-window-at-point)
-  (define-key global-map [M-s-right] 'ft-other-window-at-point)
-  (define-key global-map (kbd "M-s-÷") 'ft-next)
-  ;; [s-\`] [s-/] do not work!
-  (define-key global-map (kbd "s-/") 'dabbrev-expand)
-  (define-key global-map (kbd "s-`") 'next-multiframe-window)
-  (define-key global-map (kbd "C-\\")
-   (lambda () (interactive) (vg-message "Keyboard language switch disabled")))
- (define-key global-map (kbd "s-g") 'google-at-point)
- (define-key global-map (kbd "s-b") 'google-line)
- (define-key global-map [C-backspace] 'vg-backward-delete-word)
- (define-key global-map [M-backspace] 'vg-backward-delete-word)
   ;; latvian keyboard workaround 
   (define-key global-map (kbd "M-'")
 	(lambda () (interactive) (insert "`")))
@@ -198,15 +200,18 @@
 
 (defun google-at-point () (interactive)
  (let ((q (find-tag-default)))
-  (call-process "open" nil "*Messages*" t
-   (format "https://www.google.com/search?q=%s" q))))
+  (vg-open (format "https://www.google.com/search?q=%s" q))))
 
 (defun google-line () (interactive)
- (call-process "open" nil "*Messages*" t
+ (vg-open
   (format "https://www.google.com/search?q=%s" (thing-at-point 'line))))
 
+(defun vg-open (x) 
+ (call-process (if (equal window-system 'ns) "open" "xdg-open")
+  nil "*Messages*" t x))
+
 (defun open () (interactive)
- (call-process "open" nil "*Messages*" t (buffer-file-name)))
+ (vg-open buffer-file-name))
 
 ;;
 ;;    APPEARANCE
@@ -334,7 +339,8 @@
 (add-hook 'org-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
-  (auto-fill-mode 1))
+ (define-key org-mode-map [C-tab] nil)
+ (auto-fill-mode 1))
 (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
 (defun vg-tune-compilation (procname)
@@ -430,8 +436,9 @@ next grep is started"
 	   (command-execute 'visit-tags-table))
 
 (server-start)
-(setenv
- "EDITOR" (expand-file-name "bin/emacsclient" invocation-directory))
+(setenv "EDITOR"
+ (replace-regexp-in-string "/bin/bin/" "/bin/"
+  (expand-file-name "bin/emacsclient" invocation-directory)))
 (setenv "GREP_OPTIONS" "--binary-files=without-match")
 (setenv "PAGER" "cat")
 (setq-default case-fold-search nil case-replace nil
@@ -456,6 +463,7 @@ next grep is started"
 (require 'grep)
 (grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
 (grep-apply-setting 'grep-use-null-device nil)
+(setq sh-basic-offset 2)
 
 (message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
 

@@ -15,6 +15,18 @@ NAME_GLOB*: BP on every symbol with full name matching NAME_GLOB*
  If command contains parens (or -p option is on), it's a python script.
  For available calls & vars see source
 
+Examples:
+trace.py\
+ 'RTFTagWriter::*ElementImpl*#icu($$rsi)'\
+ '~RTFStreamWriter::OpenBlock#"OB %s" % levelIn(1)'\
+ '~RTFStreamWriter::CloseBlock#"CB %s" % levelOut(1)'\
+ $(pidof b-kodwebd) -v -o /win/kodeks/rtf2.logc -p -s2
+
+Print arg 1 of startElementImpl and endElementImpl as ICU UnicodeStrings.
+When OpenBlock/CloseBlock are called, count and print current block depth.
+Limit stack printout to 2 frames, duplicate output to /win/kodeks/rtf2.logc,
+print paths relative to /win/kodeks.
+
 Bugs:
  Call stack is printed with most immediate function at the bottom, 
  instead of at the top like debuggers do...
