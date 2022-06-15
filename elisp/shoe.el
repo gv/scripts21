@@ -441,6 +441,8 @@ next grep is started"
   (expand-file-name "bin/emacsclient" invocation-directory)))
 (setenv "GREP_OPTIONS" "--binary-files=without-match")
 (setenv "PAGER" "cat")
+(setenv "PATH"
+ "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
 (setq-default case-fold-search nil case-replace nil
 			  dabbrev-case-fold-search nil)
 (setq revert-without-query '(".*"))

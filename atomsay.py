@@ -1,19 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-import urllib2
-import re
-import xml.dom.minidom
-import xml.sax
-import time
-import datetime
-import email.utils
-import os.path
-import os
-import subprocess
-import argparse
-import urlparse
-import shutil
-import sys
+"Update podcast archive or convert RSS feeds to speech via /usr/bin/say"
+import urllib2, re, xml.dom.minidom, xml.sax, time, datetime, email.utils,\
+	os.path, os, subprocess, argparse, urlparse, shutil, sys
 
 def getText(n):
 	rc = []
@@ -360,8 +349,7 @@ class Download:
 			os.path.isfile(self.feed.tmp) and os.unlink(self.feed.tmp)
 			
 if __name__ == '__main__':
-	parser = argparse.ArgumentParser(
-		description="Download podcasts")
+	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument(
 		"--default", action="store_true")
 	parser.add_argument(
@@ -376,7 +364,7 @@ if __name__ == '__main__':
 	parser.add_argument(
 		"--prefix", nargs=1, action="store", help="Prefix")
 	parser.add_argument(
-		"--out", action="append", help="Storage directory")
+		"--out", "-o", action="append", help="Storage directory")
 	parser.add_argument(
 		"--textonly", action="store_true",
 		help="Don't convert title and date to speech")
