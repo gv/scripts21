@@ -437,13 +437,14 @@ next grep is started"
 ;; This one is from https://zck.org/emacs-move-file
 (defun move-file (new-location)
  "Write this file to NEW-LOCATION, and delete the old one."
- (interactive (list (expand-file-name
-					 (if buffer-file-name
-					  (read-file-name "Move file to: ")
-					  (read-file-name "Move file to: "
-					   default-directory
-					   (expand-file-name (file-name-nondirectory (buffer-name))
-						default-directory))))))
+ (interactive
+  (list (expand-file-name
+		 (if buffer-file-name
+		  (read-file-name "Move file to: ")
+		  (read-file-name "Move file to: "
+		   default-directory
+		   (expand-file-name (file-name-nondirectory (buffer-name))
+			default-directory))))))
  (when (file-exists-p new-location)
   (delete-file new-location))
  (let ((old-location (expand-file-name (buffer-file-name))))
