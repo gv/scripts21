@@ -139,7 +139,10 @@
 (define-key global-map [M-s-down] 'ft-at-point)
 (define-key global-map [C-M-s-down] 'ft-other-window-at-point)
 (define-key global-map [M-s-right] 'ft-other-window-at-point)
+;; Mac
 (define-key global-map (kbd "M-s-÷") 'ft-next)
+;; Linux
+(define-key global-map (kbd "M-s-/") 'ft-next)
 ;; [s-\`] [s-/] do not work!
 (define-key global-map (kbd "s-/") 'dabbrev-expand)
 (define-key global-map (kbd "s-`") 'next-multiframe-window)
@@ -153,22 +156,28 @@
 (define-key global-map [M-backspace] 'vg-backward-delete-word)
 
 (when (fboundp 'osx-key-mode)
-  (define-key osx-key-mode-map [(end)] 'end-of-line)
-  (define-key osx-key-mode-map [(home)] 'beginning-of-line)
-  (define-key osx-key-mode-map [M-up] 'backward-paragraph)
-  (define-key osx-key-mode-map [M-down] 'forward-paragraph)
-  (define-key osx-key-mode-map `[(,osxkeys-command-key up)] 'previous-error)
-  (define-key osx-key-mode-map `[(,osxkeys-command-key down)] 'next-error)
-  (define-key osx-key-mode-map `[(meta z)] 'aquamacs-undo)
-  (define-key osx-key-mode-map `[(meta c)] 'clipboard-kill-ring-save)
-  (define-key osx-key-mode-map `[(meta v)] 'cua-paste)
-  (define-key osx-key-mode-map `[(,osxkeys-command-key i)] 'test)
-  (define-key osx-key-mode-map (kbd "A-;")
-	(lambda () (interactive) (vg-message "Spell check disabled")))
-  ;; latvian keyboard workaround 
-  (define-key osx-key-mode-map (kbd "M-'")
-	(lambda () (interactive) (insert "`")))
-  )
+ (define-key osx-key-mode-map [(end)] 'end-of-line)
+ (define-key osx-key-mode-map [(home)] 'beginning-of-line)
+ (define-key osx-key-mode-map [M-up] 'backward-paragraph)
+ (define-key osx-key-mode-map [M-down] 'forward-paragraph)
+ (define-key osx-key-mode-map `[(,osxkeys-command-key up)]
+  'previous-error)
+ (define-key osx-key-mode-map `[(,osxkeys-command-key down)] 'next-error)
+ (define-key osx-key-mode-map `[(meta z)] 'aquamacs-undo)
+ (define-key osx-key-mode-map `[(meta c)] 'clipboard-kill-ring-save)
+ (define-key osx-key-mode-map `[(meta v)] 'cua-paste)
+ (define-key osx-key-mode-map `[(,osxkeys-command-key i)] 'test)
+ (define-key osx-key-mode-map (kbd "A-;")
+  (lambda () (interactive) (vg-message "Spell check disabled")))
+ ;; latvian keyboard workaround 
+ (define-key osx-key-mode-map (kbd "M-'")
+  (lambda () (interactive) (insert "`")))
+ )
+
+(define-key global-map (kbd "s-=")
+ (lambda () (interactive) (text-scale-increase 1)))
+(define-key global-map (kbd "s--")
+ (lambda () (interactive) (text-scale-increase -1)))
 
 (when (and (not (fboundp 'osx-key-mode)) (equal window-system 'ns))
   ;; latvian keyboard workaround 
@@ -195,8 +204,9 @@
 (defun ft-next () "Other def" (interactive)
 	   (find-tag () t))
 
-(defun ft-other-window-at-point () "Set other window to def" (interactive)
-	   (find-tag-other-window (find-tag-default)))
+(defun ft-other-window-at-point () "Set other window to def"
+ (interactive)
+ (find-tag-other-window (find-tag-default)))
 
 (defun google-at-point () (interactive)
  (let ((q (find-tag-default)))
@@ -204,7 +214,8 @@
 
 (defun google-line () (interactive)
  (vg-open
-  (format "https://www.google.com/search?q=%s" (thing-at-point 'line))))
+  (format "https://www.google.com/search?q=%s"
+   (replace-regexp-in-string "[[] []]\\|Q:" "" (thing-at-point 'line)))))
 
 (defun vg-open (x) 
  (call-process (if (equal window-system 'ns) "open" "xdg-open")
