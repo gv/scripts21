@@ -304,7 +304,13 @@ class NamedTracePoint(TracePoint):
 			flags, length, start = struct.unpack("HxxxxxxixxxxP", buf[8:])
 			if flags & 2:
 				return bytes(buf[10:(10+(flags>>4))]).decode("utf-16")
-			return bytes(getMemory(start, (length - 1) * 2)).decode("utf-16")
+			bb = bytes(getMemory(start, (length - 1) * 2))
+			try:
+				return bb.decode("utf-16")
+			except Exception:
+				hexDumpMem(
+					frame.thread.process, start, start+(length-1)*2, error)
+				raise
 		def levelIn(tag):
 			GlobalContext.levels[tag] = GlobalContext.levels.get(tag, 0) + 1
 			return "%s %d" % (tag, GlobalContext.levels[tag])
@@ -800,6 +806,10 @@ class Process(Util):
 			if s.external:
 				self.setBp(NamedTracePoint(
 					s.name, s.addr.GetLoadAddress(self.target)))
+
+	def listModules(self):
+		for m in self.target.modules:
+			print(m.file.fullpath)
 			
 	def listSymbols(self, includeNonDynamic):
 		for m in self.target.modules:
@@ -811,9 +821,10 @@ class Process(Util):
 	def setHandleEventBreakpoints(self):
 		for m in self.target.modules:
 			for s in m:
-				if s.name.endswith("handleEvent:]"):
-					self.setBp(
-						HandleEventTrace(s.addr.GetLoadAddress(self.target)))
+				if not s.name.endswith("handleEvent:]"):
+					continue
+				self.setBp(
+					HandleEventTrace(s.addr.GetLoadAddress(self.target)))
 
 	def inspect(self, tid):
 		print("process=%s" % self.process)
@@ -865,6 +876,8 @@ class Tool:
 				process.listSymbols(False)
 			elif self.options.list2:
 				process.listSymbols(True)
+			elif self.options.modules:
+				process.listModules()
 			else:
 				self.traceAll(process, functions)
 		finally:
@@ -928,7 +941,9 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
 	"-l", "--list", action="store_true", help="List symbols in libs")
 parser.add_argument(
-	"-m", "--list2", action="store_true", help="List all symbols")
+	"-L", "--list2", action="store_true", help="List all symbols")
+parser.add_argument(
+	"-m", "--modules", action="store_true", help="List all modules")
 parser.add_argument(
 	"-t", "--tid", help="Inspect thread TID")
 parser.add_argument(
