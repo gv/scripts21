@@ -102,6 +102,7 @@
 (global-set-key [C-f]  'isearch-forward)
 (global-set-key [M-f7]  'find-name-dired)
 (global-set-key [C-tab]  'other-window)
+(global-set-key (kbd "s-.") 'other-window)
 (global-set-key (kbd "C-=") 'switch-to-buffer)
 (global-set-key [A-end] 'end-of-buffer)
 (global-set-key [A-home] 'beginning-of-buffer)
@@ -138,7 +139,7 @@
 (define-key global-map [M-s-up] 'pop-tag-mark)
 (define-key global-map [M-s-down] 'ft-at-point)
 (define-key global-map [C-M-s-down] 'ft-other-window-at-point)
-(define-key global-map [M-s-right] 'ft-other-window-at-point)
+(define-key global-map [M-s-return] 'ft-other-window-at-point)
 ;; Mac
 (define-key global-map (kbd "M-s-÷") 'ft-next)
 ;; Linux
@@ -154,6 +155,8 @@
 (define-key global-map (kbd "s-k") 'kill-current-buffer)
 (define-key global-map [C-backspace] 'vg-backward-delete-word)
 (define-key global-map [M-backspace] 'vg-backward-delete-word)
+(define-key global-map [s-left] 'previous-buffer)
+(define-key global-map [s-right] 'next-buffer)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -206,7 +209,10 @@
 
 (defun ft-other-window-at-point () "Set other window to def"
  (interactive)
- (find-tag-other-window (find-tag-default)))
+ (let ((q (find-tag-default)))
+  (if q
+   (find-tag-other-window (find-tag-default))
+   (vg-message "No names at point"))))
 
 (defun google-at-point () (interactive)
  (let ((q (find-tag-default)))
@@ -456,6 +462,17 @@ next grep is started"
 		 (file-exists-p new-location)
 		 (not (string-equal old-location new-location)))
    (delete-file old-location))))
+
+(defun gg ()
+ "Start grep in the directory where the last grep was done"
+ (interactive) 
+ (switch-to-buffer "*grep*")
+ (command-execute 'grep))
+
+(defun gh ()
+ "Show last commit"
+ (interactive)
+ (Compact-blame-show-commit "HEAD"))
 
 (setq tramp-mode nil)
 
