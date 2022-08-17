@@ -46,10 +46,10 @@ $share_config
 $share_config
 " > $conf
 
-if [[ "$SAMBASRC" != *4*15* ]]; then
+if [[ "$SAMBASRC" == *4*11* ]]; then
 	f="--log-stdout --debuglevel=2"
 else
-	f="--debug-stdout --debuglevel=10"
+	f="--debug-stdout --debuglevel=2"
 fi
 if [ "$SAMBASRC" == "" ]; then
   pdbedit=pdbedit

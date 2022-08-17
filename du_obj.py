@@ -178,7 +178,7 @@ class Input:
 		for i in range(self.module.GetNumCompileUnits()):
 			u = self.module.GetCompileUnitAtIndex(i)
 			for t in u.GetTypes():
-				print("name=%s" % t.name)
+				print("size=%4d name=%s" % (t.size, t.name))
 
 	def descAddr(self, addr):
 		return "%s:%016X" % (addr.GetSection().GetName(), addr.GetOffset())
@@ -303,7 +303,7 @@ class Context:
 		self.report()
 
 	def processEntry(self, e, size, input, addr):
-		if self.last.spec == e.file:
+		if self.last.spec and self.last.spec == e.file:
 			prefixes = self.last.prefixes
 		else:
 			prefixes = []
@@ -654,9 +654,11 @@ class Maps(Context):
 			self.srcName = None
 			
 	def __init__(self, args):
+		self.output = None
 		self.args = args
 		self.sources = {}
 		self.accounted = Count("<accounted>")
+		
 
 	def run(self):
 		if self.args.input:
