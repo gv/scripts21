@@ -144,11 +144,18 @@
 (define-key global-map (kbd "M-s-÷") 'ft-next)
 ;; Linux
 (define-key global-map (kbd "M-s-/") 'ft-next)
+
+;; Temporary until I can't make VNC work right. Right now
+;; Cmd is M- and alt doesn't do anything
+(define-key global-map [M-next] 'ft-at-point)
+(define-key global-map [M-prior] 'pop-tag-mark)
+
 ;; [s-\`] [s-/] do not work!
 (define-key global-map (kbd "s-/") 'dabbrev-expand)
 (define-key global-map (kbd "s-`") 'next-multiframe-window)
 (define-key global-map (kbd "C-\\")
- (lambda () (interactive) (vg-message "Keyboard language switch disabled")))
+ (lambda () (interactive)
+  (vg-message "Keyboard language switch disabled")))
 (define-key global-map (kbd "s-g") 'google-at-point)
 (define-key global-map (kbd "s-b") 'google-line)
 (define-key global-map (kbd "s-r") 'revert-buffer)
@@ -157,6 +164,7 @@
 (define-key global-map [M-backspace] 'vg-backward-delete-word)
 (define-key global-map [s-left] 'previous-buffer)
 (define-key global-map [s-right] 'next-buffer)
+(define-key global-map (kbd "M-u") 'window-swap-states)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -271,10 +279,11 @@
 (set-default-coding-systems 'utf-8-unix)
 (set-terminal-coding-system 'utf-8-dos)
 (set-selection-coding-system 'utf-8-dos)
-(prefer-coding-system 'koi8-r-dos)
-(prefer-coding-system 'cp866-dos)
-(prefer-coding-system 'windows-1251-dos)
-(prefer-coding-system 'utf-8-unix)
+;;(prefer-coding-system 'koi8-r-dos)
+;;(prefer-coding-system 'cp866-dos)
+;;(prefer-coding-system 'windows-1251-dos)
+;;(prefer-coding-system 'utf-8-unix)
+(setq coding-system-for-read 'utf-8)
 
 ;; 
 ;;     PROGRAMMING
@@ -473,6 +482,11 @@ next grep is started"
  "Show last commit"
  (interactive)
  (Compact-blame-show-commit "HEAD"))
+
+(defun gj ()
+ "Show not committed changes"
+ (interactive)
+ (Compact-blame-show-commit "0000000000000000000000000000000000000000"))
 
 (setq tramp-mode nil)
 
