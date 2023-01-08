@@ -236,7 +236,7 @@
   nil "*Messages*" t x))
 
 (defun open () (interactive)
- (vg-open buffer-file-name))
+ (vg-open (or buffer-file-name default-directory)))
 
 ;;
 ;;    APPEARANCE
@@ -399,6 +399,10 @@ next grep is started"
 	(eval-buffer)))
 (add-hook 'after-save-hook 'vg-after-save)
 
+(defun vg-file-open ()
+ (highlight-regexp "[[:nonascii:]]"))
+(add-hook 'find-file-hook 'vg-file-open)
+
 (if window-system
 	(global-set-key (kbd "M-[") 'gtags-find-rtag)
 )
@@ -483,10 +487,11 @@ next grep is started"
  (interactive)
  (Compact-blame-show-commit "HEAD"))
 
-(defun gj ()
+(defun g0 ()
  "Show not committed changes"
  (interactive)
  (Compact-blame-show-commit "0000000000000000000000000000000000000000"))
+(defalias 'gj 'g0)
 
 (setq tramp-mode nil)
 
