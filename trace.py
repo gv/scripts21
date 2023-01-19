@@ -104,6 +104,7 @@ class TracePoint(Util):
 	def __init__(self):
 		self.count = 0
 		self.debuggerBps = []
+		self.filters = []
 
 	def getId(self):
 		if hasattr(self, "id"):
@@ -194,7 +195,6 @@ class NamedTracePoint(TracePoint):
 		self.addr = addr
 		self.symbolName = None
 		self.commands = []
-		self.filters = []
 		self.calls = None
 		self.stackEnabled = True
 		parts = name.split("#")
@@ -410,8 +410,16 @@ class RetTracePoint(NamedTracePoint):
 	
 
 class SSLWriteTrace(TracePoint):
+	def getId(self):
+		self.symbolName = "SSLWrite"
+		self.id = "W"
+		return self.id
+	
 	def getAddrs(self, target, process):
-		return [self.getAddrOf("SSLWrite", target) + 254]
+		base = self.getFunc(self.symbolName, target)
+		if not base:
+			return []
+		return [base.addr.GetLoadAddress(target) + 254]
 
 	def trace(self, frame, process, error):
 		buf = frame.reg["r12"].GetValueAsUnsigned()
@@ -421,8 +429,16 @@ class SSLWriteTrace(TracePoint):
 
 
 class SSLReadTrace(TracePoint):
+	def getId(self):
+		self.symbolName = "SSLRead"
+		self.id = "R"
+		return self.id
+	
 	def getAddrs(self, target, process):
-		return [self.getAddrOf("SSLRead", target) + 613]
+		base = self.getFunc(self.symbolName, target)
+		if not base:
+			return []
+		return [base.addr.GetLoadAddress(target) + 613]
 
 	def trace(self, frame, process, error):
 		# pointer to resulting number of bytes is in arg3=rcx at start
@@ -436,6 +452,22 @@ class SSLReadTrace(TracePoint):
 		size = process.ReadPointerFromMemory(psize, error)
 		if error.fail:
 			raise Exception(str(error))
+		print("read %d bytes:" % size)
+		hexDumpMem(process, buf, buf + size, error)
+
+class OpensslReadTrace(SSLReadTrace):
+	def getAddrs(self):
+		self.symbolName = "SSL_read"
+		raise "TODO"
+
+class OpensslWriteTrace(SSLWriteTrace):
+	def getAddrs(self, target, process):
+		self.symbolName = "SSL_write"
+		return []
+
+	def trace(self, frame, process, error):
+		buf = frame.reg["rsi"].GetValueAsUnsigned()
+		size = frame.reg["rdx"].GetValueAsUnsigned()
 		print("read %d bytes:" % size)
 		hexDumpMem(process, buf, buf + size, error)
 
@@ -511,6 +543,7 @@ class HandleEventTrace(TracePoint):
 class Count:
 	def __init__(self):
 		self.stopped = 0
+		self.bpLocations = 0
 
 class Process(Util):
 	objects = {}
@@ -570,7 +603,17 @@ class Process(Util):
 			sys.stderr.write("Attaching name='%s'..." % pid)
 		if not launch:
 			self.process = self.check(self.target.Attach(ai, self.error))
-		sys.stderr.write("Done\n")
+		sys.stderr.write("DONE state=%d\n" % self.process.GetState())
+		self.listener = self.debugger.GetListener()
+		self.process.GetBroadcaster().AddListener(
+			self.listener,
+			lldb.SBProcess.eBroadcastBitStateChanged |
+			lldb.SBProcess.eBroadcastBitInterrupt)
+		ev = lldb.SBEvent()
+		while self.process.GetState() == 3:
+			sys.stderr.write("State = attaching...")
+			self.listener.WaitForEvent(1, ev)
+		sys.stderr.write("DONE state=%d\n" % self.process.GetState())
 		Process.objects[self.process.id] = self
 		return self
 
@@ -656,8 +699,11 @@ class Process(Util):
 				print("Breakpoint %d:" % c.id)
 				for loc in c:
 					print(" Addr=%x" % loc.GetLoadAddress())
-		self.setBp(SSLReadTrace())
-		self.setBp(SSLWriteTrace())
+		self.setBpIfExists(SSLReadTrace())
+		self.setBpIfExists(SSLWriteTrace())
+		self.setBpIfExists(OpensslWriteTrace())
+		if self.count.bpLocations == 0:
+			raise Exception("No SSL functions found")
 		self.runTrace()
 
 	def updateBreakpoints(self):
@@ -678,12 +724,21 @@ class Process(Util):
 					dbp.SetEnabled(True)
 
 	def setBp(self, t):
+		b = self.setBpIfExists(t)
+		if b:
+			raise Exception("No locations for BP %s" % b)
+
+	def setBpIfExists(self, t):
+		id = t.getId()
 		addrs = t.getAddrs(self.target, self.process)
-		for addr in addrs:
-			self.addBpForAddr(t, addr)
+		if addrs:
+			for addr in addrs:
+				self.addBpForAddr(t, addr)
+			return None
+		# Add as t.symbolName
+		return self.addBpForAddr(t, None)
 
 	def addBpForAddr(self, t, addr):
-		id = t.getId()
 		if addr:
 			self.breakpoints[addr] = t
 			self.print("Setting bp '%s' to %X" % (t.id, addr))
@@ -693,11 +748,12 @@ class Process(Util):
 			self.print("Setting bp to '%s'" % t.symbolName)
 			b = self.target.BreakpointCreateByName(t.symbolName)
 		if b.num_locations == 0:
-			raise Exception("No locations for BP %s" % b)
+			return b
 		for i in range(b.num_locations):
 			loc = b.GetLocationAtIndex(i)
 			self.print("Location %s" % loc)
 			self.breakpoints[loc.GetLoadAddress()] = t
+		self.count.bpLocations += b.num_locations
 		# Does not get called on Linux
 		b.SetScriptCallbackFunction("callProcessHandleBp2")
 		t.debuggerBps.append(b)
@@ -706,6 +762,7 @@ class Process(Util):
 				if not f in self.filterNames:
 					self.setBp(FilterTracePoint().parse(f))
 					self.filterNames.add(f)
+		return None
 
 # /// Thread stop reasons.
 # enum StopReason {
