@@ -2,7 +2,7 @@
 
 (message "Trying to load init.el by vg...")
 (defun vg-message (fmt &rest args)
-  (apply 'message (propertize fmt 'face '(:background "#A0FFA0")) args))
+ (apply 'message (propertize fmt 'face '(:background "#A0FFA0")) args))
 (setq force-load-messages t)
 
 ;;
@@ -102,23 +102,19 @@
 (global-set-key [C-f]  'isearch-forward)
 (global-set-key [M-f7]  'find-name-dired)
 (global-set-key [C-tab]  'other-window)
-(global-set-key (kbd "s-.") 'other-window)
 (global-set-key (kbd "C-=") 'switch-to-buffer)
 (global-set-key [A-end] 'end-of-buffer)
 (global-set-key [A-home] 'beginning-of-buffer)
 (global-set-key (kbd "A-k") 'kill-line)
 (global-set-key (kbd "A-/") 'dabbrev-expand)
+;; Standard Mac 'other window' key
 (global-set-key (kbd "A-'") 'other-window)
 ;;(global-set-key [C-x] 'clipboard-kill-region)
 (global-set-key (kbd "C-v") 'cua-paste)
 (global-set-key [M-tab] 'other-window)
-;(load "../ltags/ties/question")
-;(global-set-key [M-up] 'question-here)
-;(global-set-key (kbd "ESC <up>") 'question-here)
 (global-set-key [M-up] 'previous-error)
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (global-set-key [M-down] 'next-error)
-;(global-set-key [M-.] 'question-eponimous)
 (global-set-key (kbd "C-p") 'dabbrev-expand)
 (global-set-key (kbd "C-/") 'dabbrev-expand)
 (global-set-key [A-M-down] 'ft-at-point)
@@ -138,7 +134,9 @@
 (define-key global-map [s-down] 'next-error)
 (define-key global-map [M-s-up] 'pop-tag-mark)
 (define-key global-map [M-s-down] 'ft-at-point)
+;; That's impossible to thumb type
 (define-key global-map [C-M-s-down] 'ft-other-window-at-point)
+;; That's hard to remember
 (define-key global-map [M-s-return] 'ft-other-window-at-point)
 ;; Mac
 (define-key global-map (kbd "M-s-÷") 'ft-next)
@@ -165,6 +163,9 @@
 (define-key global-map [s-left] 'previous-buffer)
 (define-key global-map [s-right] 'next-buffer)
 (define-key global-map (kbd "M-u") 'window-swap-states)
+;; TODO mimic vscode
+(define-key global-map (kbd "s-1") 'other-window)
+(define-key global-map (kbd "s-2") 'other-window)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -231,12 +232,12 @@
   (format "https://www.google.com/search?q=%s"
    (replace-regexp-in-string "[[] []]\\|Q:" "" (thing-at-point 'line)))))
 
-(defun vg-open (x) 
- (call-process (if (equal window-system 'ns) "open" "xdg-open")
-  nil "*Messages*" t x))
+(defun vg-open (x)
+ (start-process x "*Messages*"
+  (if (equal window-system 'ns) "open" "xdg-open") x))
 
 (defun open () (interactive)
- (vg-open (or buffer-file-name default-directory)))
+ (vg-open (expand-file-name (or buffer-file-name default-directory))))
 
 ;;
 ;;    APPEARANCE
@@ -251,9 +252,33 @@
 ;; Выделение парных скобок
 (show-paren-mode 1)
 (setq show-paren-style 'expression);выделять все выражение в скобках
-(if (equal window-system 'x)
+(when (equal window-system 'x)
+ (define-key global-map [touchscreen-update] 'vg-scroll-touchscreen)
+ (define-key global-map [touchscreen-end] 'vg-reset-touchscreen)
+
+ (defvar vg-last-y 0)
+ (defun vg-scroll-touchscreen ()
+  (interactive)
+  (let* ((coords (nth 3 (car (car (cdr last-input-event)))))
+		 (y (cdr coords))
+		 (dy (- vg-last-y y)))
+   (when (> vg-last-y 0)
+	;; (message "vg-last-y=%s y=%s dy=%s" vg-last-y y dy)
+	(if (> dy 0)
+	 (pixel-scroll-precision-scroll-down-page dy)
+	 (pixel-scroll-precision-scroll-up-page (- dy))))
+   (setq vg-last-y y)))
+ 
+ (defun vg-reset-touchscreen (event)
+  (interactive "e")
+  (setq vg-last-y 0)
+  (posn-set-point (cdr (event-end event))))
+
+ (pixel-scroll-mode)
+ (add-to-list 'default-frame-alist
+             '(font . "Monospace-10.9"))
 	;; "Bitstream Vera Sans Mono-9"
-	(set-default-font "Monospace-9"))
+ (set-frame-font "Monospace-10.9"))
   ;; "Courier New 9")
 
 ;(set-cursor-color "red")
@@ -392,7 +417,7 @@ next grep is started"
 
 (defun vg-after-save ()
   (when (and
-		 (string-equal mode-name "Emacs-Lisp")
+		 (string-equal (format "%s" mode-name) "Emacs-Lisp")
 		 (not
 		  (string-match "/\\(shoe\\|.dir-locals\\).el$" buffer-file-name)))
 	(vg-message "Saved %s & evaluating..." buffer-file-name)
