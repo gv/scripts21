@@ -112,9 +112,7 @@
 ;;(global-set-key [C-x] 'clipboard-kill-region)
 (global-set-key (kbd "C-v") 'cua-paste)
 (global-set-key [M-tab] 'other-window)
-(global-set-key [M-up] 'previous-error)
 (global-set-key (kbd "ESC <up>") 'previous-error)
-(global-set-key [M-down] 'next-error)
 (global-set-key (kbd "C-p") 'dabbrev-expand)
 (global-set-key (kbd "C-/") 'dabbrev-expand)
 (global-set-key [A-M-down] 'ft-at-point)
@@ -126,8 +124,6 @@
 (global-set-key (kbd "A-M-/") 'ft-next)
 (define-key global-map (kbd "s-[") 'backward-sexp)
 (define-key global-map (kbd "s-]") 'forward-sexp)
-(define-key global-map [M-up] 'backward-paragraph)
-(define-key global-map [M-down] 'forward-paragraph)
 (define-key global-map [s-home] 'beginning-of-buffer)
 (define-key global-map [s-end] 'end-of-buffer)
 (define-key global-map [s-up] 'previous-error)
@@ -166,6 +162,12 @@
 ;; TODO mimic vscode
 (define-key global-map (kbd "s-1") 'other-window)
 (define-key global-map (kbd "s-2") 'other-window)
+(global-set-key [M-down] 'move-text-down)
+(global-set-key [M-up] 'move-text-up)
+(define-key global-map [s-delete]
+ (lambda () (interactive) (just-one-space -1)))
+(define-key global-map [s-delete]
+ (lambda () (interactive) (cycle-spacing -1)))
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -183,8 +185,7 @@
   (lambda () (interactive) (vg-message "Spell check disabled")))
  ;; latvian keyboard workaround 
  (define-key osx-key-mode-map (kbd "M-'")
-  (lambda () (interactive) (insert "`")))
- )
+  (lambda () (interactive) (insert "`"))))
 
 (define-key global-map (kbd "s-=")
  (lambda () (interactive) (text-scale-increase 1)))
@@ -391,6 +392,8 @@
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
  (define-key org-mode-map [C-tab] nil)
+ (define-key org-mode-map [M-up] nil)
+ (define-key org-mode-map [M-down] nil)
  (auto-fill-mode 1))
 (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
@@ -501,6 +504,46 @@ next grep is started"
 		 (not (string-equal old-location new-location)))
    (delete-file old-location))))
 
+(defun move-text-internal (arg)
+  (cond
+   ((and mark-active transient-mark-mode)
+    (if (> (point) (mark))
+        (exchange-point-and-mark))
+    (let ((column (current-column))
+          (text (delete-and-extract-region (point) (mark))))
+      (forward-line arg)
+      (move-to-column column t)
+      (set-mark (point))
+      (insert text)
+      (exchange-point-and-mark)
+      (setq deactivate-mark nil)))
+   (t
+    (let ((column (current-column)))
+      (beginning-of-line)
+      (when (or (> arg 0) (not (bobp)))
+        (forward-line)
+        (when (or (< arg 0) (not (eobp)))
+          (transpose-lines arg)
+          (when (and nil (eval-when-compile
+                       '(and (>= emacs-major-version 24)
+                             (>= emacs-minor-version 3)))
+                     (< arg 0))
+            (vg-message "F=%s" (forward-line -1))))
+        (forward-line -1))
+      (move-to-column column t)))))
+
+(defun move-text-down (arg)
+  "Move region (transient-mark-mode active) or current line
+  arg lines down."
+  (interactive "*p")
+  (move-text-internal arg))
+
+(defun move-text-up (arg)
+  "Move region (transient-mark-mode active) or current line
+  arg lines up."
+  (interactive "*p")				 
+  (move-text-internal (- arg)))		 
+									 
 (defun gg ()
  "Start grep in the directory where the last grep was done"
  (interactive) 
@@ -533,7 +576,9 @@ next grep is started"
 (server-start)
 (setenv "EDITOR"
  (replace-regexp-in-string "/bin/bin/" "/bin/"
-  (expand-file-name "bin/emacsclient" invocation-directory)))
+  (if (string-match "/src/" invocation-directory)
+   (expand-file-name "../lib-src/emacsclient" invocation-directory)
+   (expand-file-name "bin/emacsclient" invocation-directory))))
 (setenv "GREP_OPTIONS" "--binary-files=without-match")
 (setenv "PAGER" "cat")
 (setenv "PATH"
@@ -542,11 +587,12 @@ next grep is started"
 			  dabbrev-case-fold-search nil)
 (setq revert-without-query '(".*"))
 (setq create-lockfiles nil)
-(setq cperl-indent-level 2)
+(setq perl-indent-level (setq cperl-indent-level 2))
 (setq dired-listing-switches "-alh")
 (setq ring-bell-function 'ignore)
 (setq org-support-shift-select t)
 (setq-default org-startup-truncated nil)
+(setq-default org-startup-folded t)
 (setq vc-command-messages t)
 (setq visible-bell t)
 (fringe-mode 0)
