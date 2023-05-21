@@ -9,14 +9,15 @@ port=${2-445}
 password=${3-0000}
 shift 3 || true
 name=$(basename "$root")
+user=$(whoami)
 tmpdir=/tmp/smb$port
-conf=$tmpdir/vg.conf
+conf=$tmpdir/$user.conf
 share_config="
 path = $root
 # guest ok = yes
 writable = yes
 force create mode = 774
-force user = vg
+force user = $user
 "
 set -xe
 rm -fv /tmp/smbd-smb.conf.pid
@@ -60,7 +61,7 @@ else
   cd "$SAMBASRC/bin/default/source3"
 fi
 echo "$password
-$password"| tee /dev/stderr| $pdbedit -D4 -s "$conf" -t -a -u vg 
+$password"| tee /dev/stderr| $pdbedit -D4 -s "$conf" -t -a -u $user 
 ulimit -n 2048
 $smbd -p $port --foreground --no-process-group $f\
    --configfile="$conf" "$@"

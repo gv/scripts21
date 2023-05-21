@@ -162,6 +162,10 @@
 ;; TODO mimic vscode
 (define-key global-map (kbd "s-1") 'other-window)
 (define-key global-map (kbd "s-2") 'other-window)
+;; Go to the notes
+(define-key global-map (kbd "s-3")
+ (lambda () (interactive) (find-file "~/20note.org")))
+;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
 (global-set-key [M-up] 'move-text-up)
 (define-key global-map [s-delete]
@@ -378,6 +382,7 @@
 (add-hook 'makefile-mode-hook 'compact-blame-mode)
 (add-hook 'js-mode-hook 'compact-blame-mode)
 (add-hook 'tcl-mode-hook 'compact-blame-mode)
+(add-hook 'bat-mode-hook 'compact-blame-mode)
 
 (defun tune-dabbrev ()
   (modify-syntax-entry ?/ ".")
@@ -388,13 +393,16 @@
 
 (add-hook 'sh-mode-hook 'tune-dabbrev)
 (add-hook 'shell-mode-hook 'tune-dabbrev)
-(add-hook 'org-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
+ (tune-dabbrev)
  (define-key org-mode-map [C-tab] nil)
  (define-key org-mode-map [M-up] nil)
  (define-key org-mode-map [M-down] nil)
- (auto-fill-mode 1))
+ (auto-fill-mode 1)
+ (setq-local compile-command
+  (concat "/scripts/tasks.py "
+   (file-name-nondirectory (buffer-file-name)))))
 (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
 (defun vg-tune-compilation (procname)
@@ -569,9 +577,10 @@ next grep is started"
 (defalias 'cbm 'compact-blame-mode)
 (defalias 'gl 'git-log)
 (defun vtt () (interactive)
-	   (require 'etags)
-	   (tags-reset-tags-tables)
-	   (command-execute 'visit-tags-table))
+ (require 'etags)
+ (tags-reset-tags-tables)
+ (command-execute 'visit-tags-table))
+(setq compile-command "scl enable gcc-toolset-12 'make -k'")
 
 (server-start)
 (setenv "EDITOR"

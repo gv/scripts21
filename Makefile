@@ -328,7 +328,7 @@ makefile_in_src.%: %/Makefile
 		libtoolize -c -f &&\
 		automake --add-missing --copy --force-missing
 
-%/configure: %/autogen.sh_
+%/configure: %/autogen.sh
 	cd $(dir $@) && bash $< 2>&1 | tee autogen.log
 
 %/configure: %/configure.ac 
