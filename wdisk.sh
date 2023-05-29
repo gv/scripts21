@@ -12,8 +12,20 @@ while [ $# != 0 ]; do
 	  # GRUB on Almalinux 8.4 DVD can't find kernel on if=virtio
 	  flags="$flags -drive file=$1,media=cdrom,if=virtio"
 	  ;;
-	/dev/*)
+	*.hc)
 	  flags="$flags -drive file=$1,format=raw,if=virtio"
+	  ;;
+	/dev/*)
+	  flags="$flags -drive format=raw,if=virtio,file=$1"
+	  # TODO Add a switch to use one of these instead
+	  flags_usb1="$flags 
+	  -usb
+	  -drive if=none,id=stick,format=raw,file=$1
+	  -device usb-storage,drive=stick"
+	  flags_usb2="$flags
+	   -device usb-ehci,id=ehci
+	   -drive if=none,id=stick,format=raw,file=$1
+	   -device usb-storage,drive=stick"
 	  set -xe
 	  diskutil unmountDisk force $1
 	  sudo chown $(whoami) $1
