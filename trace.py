@@ -663,7 +663,7 @@ class Process(Util):
 		self.lastPrintedStack = frame.thread.frames[::-1]
 
 	def getSourceLine(self, f, template):
-		if not f.line_entry.IsValid():
+		if not f.line_entry.IsValid() or not f.line_entry.file.fullpath:
 			return ""
 		cwd = (
 			self.options.output and os.path.dirname(self.options.output) or
