@@ -99,7 +99,9 @@
 ;; setting some f[1-12] keys
 (global-set-key [f2]    'save-buffer)
 (global-set-key [M-f4]  'save-buffers-kill-emacs)
-(global-set-key [C-f]  'isearch-forward)
+(define-key global-map (kbd "C-a") 'mark-whole-buffer)
+;; [C-f] didn't work
+(define-key global-map (kbd "C-f") 'isearch-forward)
 (global-set-key [M-f7]  'find-name-dired)
 (global-set-key [C-tab]  'other-window)
 (global-set-key (kbd "C-=") 'switch-to-buffer)
@@ -165,6 +167,8 @@
 ;; Go to the notes
 (define-key global-map (kbd "s-3")
  (lambda () (interactive) (find-file "~/20note.org")))
+(define-key global-map (kbd "s-4")
+ (lambda () (interactive) (switch-to-buffer "*compilation*")))
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
 (global-set-key [M-up] 'move-text-up)
@@ -258,12 +262,15 @@
 (show-paren-mode 1)
 (setq show-paren-style 'expression);выделять все выражение в скобках
 (when (equal window-system 'x)
+ (define-key global-map [touchscreen-begin] 'vg-start-scroll-touchscreen)
  (define-key global-map [touchscreen-update] 'vg-scroll-touchscreen)
  (define-key global-map [touchscreen-end] 'vg-reset-touchscreen)
 
  (defvar vg-last-y 0)
- (defun vg-scroll-touchscreen ()
-  (interactive)
+ (defun vg-start-scroll-touchscreen (event) (interactive "e")
+  (posn-set-point (cdr (event-end event))))
+ 
+ (defun vg-scroll-touchscreen () (interactive)
   (let* ((coords (nth 3 (car (car (cdr last-input-event)))))
 		 (y (cdr coords))
 		 (dy (- vg-last-y y)))
@@ -274,8 +281,7 @@
 	 (pixel-scroll-precision-scroll-up-page (- dy))))
    (setq vg-last-y y)))
  
- (defun vg-reset-touchscreen (event)
-  (interactive "e")
+ (defun vg-reset-touchscreen (event) (interactive "e")
   (setq vg-last-y 0)
   (posn-set-point (cdr (event-end event))))
 
@@ -568,6 +574,10 @@ next grep is started"
  (interactive)
  (Compact-blame-show-commit "0000000000000000000000000000000000000000"))
 (defalias 'gj 'g0)
+
+(defun lm (path) "Load man page from path" (interactive "f")
+ (message "Path='%s'" path)
+ (man (format "-l %s" path)))
 
 (setq tramp-mode nil)
 
