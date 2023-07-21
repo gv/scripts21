@@ -88,6 +88,12 @@ usb.options = CFLAGS="-Wno-incompatible-pointer-types -Wno-format"
 keyfuzz.options = --disable-lynx
 emacs.options=--with-tiff=no --with-xpm=no --with-gnutls=no\
 	--with-jpeg=no --with-gif=no
+evince.options=-Ddjvu=enabled -Dnautilus=false -Dintrospection=false\
+	-Dgtk_doc=false -Duser_doc=false -Dgspell=disabled
+#
+# To build with OS paths baked in:
+# scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
+#
 
 noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
 
@@ -213,7 +219,7 @@ $(AFSCTOOL.Darwin): $(AFSCTOOL.Darwin).c
 .PRECIOUS: $O/$B.%/Makefile $O/$B.%/build.ninja\
 	%/configure %/Makefile.in\
 	$R/%.install.successful.log.txt $R/%.make.successful.log.txt\
-	$R/%.ninja.successful.log.txt $R/%.waf.successful.log.txt\
+	$O/$B.%/%.ninja.success.logc $R/%.waf.successful.log.txt\
 	$(AFSCTOOL)
 
 $f:
@@ -226,7 +232,7 @@ _build.% %.n_: $R/%.waf.successful.log.txt $(AFSCTOOL) $f
 	$(AFSCTOOL) -cfvvv $O/$B.$*
 	@echo $^ is up to date	
 
-_build.% %.n_: $R/%.ninja.successful.log.txt $(AFSCTOOL) $f
+_build.% %.n_: $O/$B.%/%.ninja.success.logc $(AFSCTOOL) $f
 	$(AFSCTOOL) -cfvvv $O/$B.$*
 	@echo $^ is up to date	
 
@@ -253,7 +259,7 @@ $R/%.install.successful.log.txt: $S/%/*.gyp $(MAKEFILE_LIST)
 		ninja -vC out/Release $($*.targets)) 2>&1 |tee $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
-$R/%.install.successful.log.txt: $R/%.ninja.successful.log.txt $(MAKEFILE_LIST)
+$R/%.install.successful.log.txt: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* && ninja install) 2>&1 | tee $@.tmp.txt
 	mv -v $@.tmp.txt $@
@@ -271,7 +277,7 @@ $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 		-t $S/$* --prefix="$R" $($*.options)
 
 CAFF = $(shell which caffeinate)
-$R/%.ninja.successful.log.txt: $O/$B.%/build.ninja $(AFSCTOOL)\
+$O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 	$(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* && time $(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
@@ -293,7 +299,8 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 			$($*.options) $($*.options.$(b0)) --prefix="$R" 2>&1|\
 			tee _configure.log\
 
-$O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py $(MAKEFILE_LIST)
+$O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
+	$(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
 		$($*.envvars) python3 $S/$*/meson/meson.py --prefix="$R"\
@@ -302,8 +309,9 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py $(MAKEFILE_LIST)
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
-		$($*.envvars) CFLAGS=-I$R/include python3 $S/meson/meson.py\
-		--prefix="$R" $($*.options) $S/$*
+		$($*.envvars) CFLAGS=-I$R/include python3.9 $S/meson/meson.py\
+		--prefix="$R" $($*.options) $S/$* 2>&1|\
+		tee meson_.log
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
@@ -329,7 +337,7 @@ makefile_in_src.%: %/Makefile
 		automake --add-missing --copy --force-missing
 
 %/configure: %/autogen.sh
-	cd $(dir $@) && bash $< 2>&1 | tee autogen.log
+	cd $(dir $@) && NOCONFIGURE=1 bash $< 2>&1 | tee autogen.log
 
 %/configure: %/configure.ac 
 	cd $(dir $@) && autoreconf -iv
