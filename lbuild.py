@@ -1,6 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.9
 "Process build logs and/or run build commands + save artefacts"
-import sys, os, argparse, subprocess, datetime, shutil, errno, re, stat
+import sys, os, argparse, subprocess, datetime, shutil, errno, re,\
+	stat, shlex
 
 def nn(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
@@ -43,7 +44,7 @@ class Command:
 		return "-c" in self.argv
 
 class BuildLog:
-	def __init__(self, args):
+	def __init__(self, args, paths):
 		self.args = args
 		self.takeoff = datetime.datetime.now()
 		self.commands = []
@@ -51,7 +52,7 @@ class BuildLog:
 		self.lines = Count("lines")
 		self.cc = Count("commands")
 		self.compiles = Count("compiles")
-		self.paths = Paths(self, os.getcwd(), self.args)
+		self.paths = paths
 		self.prefix = ["scl", "enable", "gcc-toolset-9", "--"] 
 		# TODO
 		# It is possible to make it work by using
@@ -107,7 +108,8 @@ class BuildLog:
 
 	def logCommand(self, cmd, out=None, env=None):
 		cmd = self.prefix + cmd
-		self.add("Running '%s'...\n" % cmd, out)
+		self.add("In '%s' Running '%s'...\n" % (
+			self.paths.build, shlex.join(cmd)), out)
 		p = subprocess.Popen(
 			cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
 			bufsize=0, cwd=self.paths.build, env=env)
@@ -129,13 +131,13 @@ class BuildLogTool:
 					nn(count.size), count.name))
 				
 	def run(self):
-		bl = BuildLog(args)
+		bl = BuildLog(args, Paths(self, os.getcwd(), self.args))
 		bl.verbose = None
 		for path in self.args.POSITIONAL:
 			bl.read(open(path, "r"), None)
 		if self.args.codeql:
 			codeql = os.path.expanduser("~/codeql/codeql")
-			extrLog = BuildLog(args)
+			extrLog = BuildLog(args, bl.paths)
 			extrLog.logCommand([
 				codeql, "database", "init", self.args.codeql,
 				"--language=cpp", "--source-root=.", "--overwrite"])
@@ -188,7 +190,7 @@ class Build:
 		self.saveArtefacts()
 
 	def checkOutput(self, cmd, **kw):
-		print("Running '%s'..." % (cmd))
+		print("Running '%s'..." % (shlex.join(cmd)))
 		return subprocess.check_output(cmd, **kw)
 
 	def getGit(self):
@@ -224,7 +226,7 @@ class Build:
 
 	def saveArtefacts(self):
 		if self.dirty:
-			for p in self.getConf["files"]:
+			for p in self.getConf("files"):
 				if os.path.basename(p) == p:
 					continue
 				a = self.paths.artefact(p)
@@ -249,14 +251,14 @@ class Build:
 		return self.pconf.get(name, self.conf.get(name, default))
 
 	def runBuildCommands(self):
-		self.bl = BuildLog(args) 
+		self.bl = BuildLog(args, self.paths) 
 		with open(self.paths.log, "wt") as log:
 			self.bl.add(
 				"-*- mode: compilation -*-\n", log)
 			self.bl.add("Build %s\n" % self.getName(), log)
 			self.logBuildCommands(log)
 			self.bl.add("Done build %s in %s (saved %s)\n" % (
-				self.getName(), self.describeTime(),self.saved.size),
+				self.getName(), self.bl.describeTime(), self.saved.size),
 						 log)						 
 			
 	def expand(self, arg):
@@ -266,16 +268,13 @@ class Build:
 		arg = arg.replace("$here", here)
 		return [arg]
 
-	def download(self, cmd):
-		raise Exception("TODO")
-
 	def logBuildCommands(self, log):
 		for cmd in self.getConf("commands"):
 			cmd = sum([self.expand(a) for a in cmd], [])
-			if "$download" == cmd[0]:
-				self.download(cmd)
-				continue
-			if "win32" != self.platform:
+			prefix = self.getConf("cmdPrefix")
+			if prefix:
+				self.bl.prefix = prefix
+			elif "win32" != self.platform:
 				dockerImage = self.getConf("docker")
 				if dockerImage:
 					top = self.getConf("top", self.paths.base)
@@ -291,7 +290,8 @@ class Build:
 						"-u", str(os.getuid()),
 						"-w", build,
 						"-e", f"HOME={build}",
-						"-it", dockerImage]
+						"-it", dockerImage,
+						"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)
 			
 				
