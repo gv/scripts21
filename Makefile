@@ -12,10 +12,23 @@ B = $(b0:Darwin=build)
 
 # ---------- project specific options ----------
 
-make_perf: make.bzip2-1.0.6 make.xz make.elfutils
-	mkdir -p $O/build.perf
+%.perfc: cov.flags="EXTRA_CFLAGS=-fprofile-arcs -ftest-coverage"
+%.perf %.perfc %.perfc.g: output=$O/build.$(@:.g=)
+%.perf %.perfc:
+	mkdir -p $(output)
+	cd $*/tools/perf && $(MAKE) O=$(output) V=1\
+		NO_JEVENTS=1 NO_LIBTRACEEVENT=1 $(cov.flags)
+
+%.perfc.g:
+	cd $O/$*/tools/perf && gcov -dp $(shell find $(output) -iname '*.o')
+
+perf.dnf:
+	dnf install elfutils-devel elfutils-libelf-devel
+
+perf-static: bzip2-1.0.6.m xz.m elfutils.m
+	mkdir -p $O/static.perf
 	cd linux/tools/perf &&\
-		$(MAKE) O=$O/build.perf V=1 LDFLAGS="-static -L$R/lib"\
+		$(MAKE) O=$O/static.perf V=1 LDFLAGS="-static -L$R/lib"\
 		EXTRA_CFLAGS=-I$R/include
 
 Clang_DIR = /Volumes/clang+llvm-9.0.0-x86_64-darwin-apple
@@ -88,12 +101,20 @@ usb.options = CFLAGS="-Wno-incompatible-pointer-types -Wno-format"
 keyfuzz.options = --disable-lynx
 emacs.options=--with-tiff=no --with-xpm=no --with-gnutls=no\
 	--with-jpeg=no --with-gif=no
+new-emacs.options = $(emacs.options)
 evince.options=-Ddjvu=enabled -Dnautilus=false -Dintrospection=false\
 	-Dgtk_doc=false -Duser_doc=false -Dgspell=disabled
 #
 # To build with OS paths baked in:
 # scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
 #
+
+new-emacs.n: new-fake-manuals
+
+%fake-manuals:
+	mkdir -p $*emacs/info
+	echo "Fake" > $*emacs/info/emacs
+	echo "Fake" > $*emacs/info/emacs.info
 
 noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
 

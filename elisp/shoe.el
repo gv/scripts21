@@ -1,4 +1,5 @@
-;; Eval before cursor is C-x C-e -*-lexical-binding: t; lisp-indent-offset: 1-*-
+;; -*- lexical-binding: t; lisp-indent-offset: 1 -*-
+;; Eval before cursor is C-x C-e
 
 (message "Trying to load init.el by vg...")
 (defun vg-message (fmt &rest args)
@@ -92,13 +93,10 @@
 (global-set-key [\C-home] 'beginning-of-buffer)
 (global-set-key [\C-end] 'end-of-buffer)
 (global-set-key [(control y)] 
-  '(lambda () 
-     (interactive)
-     (beginning-of-line)
-     (kill-line)))
-;; setting some f[1-12] keys
+ '(lambda () (interactive)
+   (beginning-of-line)
+   (kill-line)))
 (global-set-key [f2]    'save-buffer)
-(global-set-key [M-f4]  'save-buffers-kill-emacs)
 (define-key global-map (kbd "C-a") 'mark-whole-buffer)
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
@@ -108,15 +106,31 @@
 (global-set-key [A-end] 'end-of-buffer)
 (global-set-key [A-home] 'beginning-of-buffer)
 (global-set-key (kbd "A-k") 'kill-line)
-(global-set-key (kbd "A-/") 'dabbrev-expand)
 ;; Standard Mac 'other window' key
 (global-set-key (kbd "A-'") 'other-window)
 ;;(global-set-key [C-x] 'clipboard-kill-region)
 (global-set-key (kbd "C-v") 'cua-paste)
 (global-set-key [M-tab] 'other-window)
-(global-set-key (kbd "ESC <up>") 'previous-error)
+
+;; Completion
+;; [s-\`] [s-/] do not work!
+(define-key global-map (kbd "s-/") 'dabbrev-expand)
+(global-set-key (kbd "A-/") 'dabbrev-expand)
+;; Use key from Vim
 (global-set-key (kbd "C-p") 'dabbrev-expand)
 (global-set-key (kbd "C-/") 'dabbrev-expand)
+;; Putting this next to C-p to return to previous completion
+(define-key global-map (kbd "C-o") 'undo)
+(define-key global-map (kbd "C-0")
+ (lambda () (interactive) (insert " ")))
+;; End of `completion`
+
+(define-key global-map (kbd "s-[") 'backward-sexp)
+(define-key global-map (kbd "s-]") 'forward-sexp)
+(define-key global-map [s-home] 'beginning-of-buffer)
+(define-key global-map [s-end] 'end-of-buffer)
+
+;; Code navigation
 (global-set-key [A-M-down] 'ft-at-point)
 (global-set-key [A-M-S-down] 'ft-other-window-at-point)
 (global-set-key [A-C-M-down] 'ft-other-window-at-point)
@@ -124,12 +138,6 @@
 (global-set-key [A-M-up] 'pop-tag-mark)
 ; [A-M-/] didn't work
 (global-set-key (kbd "A-M-/") 'ft-next)
-(define-key global-map (kbd "s-[") 'backward-sexp)
-(define-key global-map (kbd "s-]") 'forward-sexp)
-(define-key global-map [s-home] 'beginning-of-buffer)
-(define-key global-map [s-end] 'end-of-buffer)
-(define-key global-map [s-up] 'previous-error)
-(define-key global-map [s-down] 'next-error)
 (define-key global-map [M-s-up] 'pop-tag-mark)
 (define-key global-map [M-s-down] 'ft-at-point)
 ;; That's impossible to thumb type
@@ -140,26 +148,29 @@
 (define-key global-map (kbd "M-s-÷") 'ft-next)
 ;; Linux
 (define-key global-map (kbd "M-s-/") 'ft-next)
-
 ;; Temporary until I can't make VNC work right. Right now
 ;; Cmd is M- and alt doesn't do anything
 (define-key global-map [M-next] 'ft-at-point)
 (define-key global-map [M-prior] 'pop-tag-mark)
+;; End of code navigation
 
-;; [s-\`] [s-/] do not work!
-(define-key global-map (kbd "s-/") 'dabbrev-expand)
 (define-key global-map (kbd "s-`") 'next-multiframe-window)
 (define-key global-map (kbd "C-\\")
  (lambda () (interactive)
   (vg-message "Keyboard language switch disabled")))
 (define-key global-map (kbd "s-g") 'google-at-point)
 (define-key global-map (kbd "s-b") 'google-line)
+;; Use with Shift on XFCE
 (define-key global-map (kbd "s-r") 'revert-buffer)
 (define-key global-map (kbd "s-k") 'kill-current-buffer)
 (define-key global-map [C-backspace] 'vg-backward-delete-word)
 (define-key global-map [M-backspace] 'vg-backward-delete-word)
+;; Use a key from shell
+(define-key global-map (kbd "C-w") 'vg-backward-delete-word)
 (define-key global-map [s-left] 'previous-buffer)
 (define-key global-map [s-right] 'next-buffer)
+;; Norton Commander had Ctrl-U, but it's used for another thing,
+;; and Flag-U does something else on Mac, so it's Alt-U for now
 (define-key global-map (kbd "M-u") 'window-swap-states)
 ;; TODO mimic vscode
 (define-key global-map (kbd "s-1") 'other-window)
@@ -172,10 +183,19 @@
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
 (global-set-key [M-up] 'move-text-up)
-(define-key global-map [s-delete]
- (lambda () (interactive) (just-one-space -1)))
+;; Option:
+;; (define-key global-map [s-delete]
+;;  (lambda () (interactive) (just-one-space -1)))
 (define-key global-map [s-delete]
  (lambda () (interactive) (cycle-spacing -1)))
+(define-key global-map (kbd "M-RET") 'dired-find-file-other-window)
+
+;; Compile/grep
+(define-key global-map (kbd "s-q") 'compile)
+(define-key global-map (kbd "s-s") 'gg)
+(global-set-key (kbd "ESC <up>") 'previous-error)
+(define-key global-map [s-up] 'previous-error)
+(define-key global-map [s-down] 'next-error)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -233,13 +253,22 @@
    (vg-message "No names at point"))))
 
 (defun google-at-point () (interactive)
- (let ((q (find-tag-default)))
-  (vg-open (format "https://www.google.com/search?q=%s" q))))
+ (let
+  ((q (if (use-region-p)
+	   (format "\"%s\"" (buffer-substring-no-properties
+						 (region-beginning) (region-end)))
+	   (find-tag-default))))
+  (Vg-open-browser (format "https://www.google.com/search?q=%s" q))))
 
 (defun google-line () (interactive)
- (vg-open
+ (Vg-open-browser
   (format "https://www.google.com/search?q=%s"
    (replace-regexp-in-string "[[] []]\\|Q:" "" (thing-at-point 'line)))))
+
+(defun Vg-open-browser (url)
+ (if (equal window-system 'ns)
+  (vg-open url)
+  (start-process url "*Messages*" "firefox" url)))
 
 (defun vg-open (x)
  (start-process x "*Messages*"
@@ -261,7 +290,8 @@
 ;; Выделение парных скобок
 (show-paren-mode 1)
 (setq show-paren-style 'expression);выделять все выражение в скобках
-(when (equal window-system 'x)
+(when (and (equal window-system 'x)
+	   (not (fboundp 'touch-screen-scroll)))
  (define-key global-map [touchscreen-begin] 'vg-start-scroll-touchscreen)
  (define-key global-map [touchscreen-update] 'vg-scroll-touchscreen)
  (define-key global-map [touchscreen-end] 'vg-reset-touchscreen)
@@ -275,7 +305,6 @@
 		 (y (cdr coords))
 		 (dy (- vg-last-y y)))
    (when (> vg-last-y 0)
-	;; (message "vg-last-y=%s y=%s dy=%s" vg-last-y y dy)
 	(if (> dy 0)
 	 (pixel-scroll-precision-scroll-down-page dy)
 	 (pixel-scroll-precision-scroll-up-page (- dy))))
@@ -283,8 +312,16 @@
  
  (defun vg-reset-touchscreen (event) (interactive "e")
   (setq vg-last-y 0)
-  (posn-set-point (cdr (event-end event))))
+  (let ((p (cdr (event-end event))))
+   (when nil
+	(vg-message "e = %s" event)
+	(vg-message "event-end e = %s" (event-end event))
+	(vg-message "event-start e = %s" (event-start event))
+	(vg-message "cdr last-input-event = %s" (cdr last-input-event)))
+   (posn-set-point p)))
+ )
 
+(when (equal window-system 'x) 
  (pixel-scroll-mode)
  (add-to-list 'default-frame-alist
              '(font . "Monospace-10.9"))
@@ -326,7 +363,7 @@
 ;;     ```````````
 ;;
 
-; Загрузим другие программы 
+; Here we rely on load path set in .emacs. TODO use path of this file
 (autoload 'php-mode "php-mode.el" "XXX" t)
 (autoload 'wikipedia-mode "wikipedia-mode.el"
   "Major mode for editing documents in Wikipedia markup." t)
@@ -336,10 +373,12 @@
 (autoload 'haskell-mode "haskell-mode-2.8.0/haskell-site-file" "HM" t)
 (add-hook 'haskell-mode-hook 'turn-on-haskell-indentation)
 (prog1
-  (load "../compact-blame/compact-blame.el")
-  (setq compact-blame-bg1 "rainbow")
-  (setq compact-blame-bg2 "rainbow2")
-  (setq compact-blame-format "%Y%x%.%#"))
+ (load "../compact-blame/compact-blame.el")
+ (setq compact-blame-bg1 "rainbow")
+ (setq compact-blame-bg2 "rainbow2")
+ (setq compact-blame-format "%Y%x%.%#"))
+(load "markdown-mode/markdown-mode.el")
+(add-hook 'markdown-mode-hook 'word-wrap-whitespace-mode)
 
 ;; for ViewSourceWith Firefox extension
 ;;(add-to-list 'auto-mode-alist '("index.\\.*" . wikipedia-mode))
@@ -367,8 +406,7 @@
 (defun my-javascript-mode-hook ()
   (setq indent-tabs-mode t tab-width 4 js-indent-level 4)
   (modify-syntax-entry ?` "\"")
-  (vg-message "JS mode template strings enabled")
-  )
+  (vg-message "JS mode template strings enabled"))
 (add-hook 'js-mode-hook 'my-javascript-mode-hook)
 
 (defun vg-tune-py ()
@@ -389,6 +427,7 @@
 (add-hook 'js-mode-hook 'compact-blame-mode)
 (add-hook 'tcl-mode-hook 'compact-blame-mode)
 (add-hook 'bat-mode-hook 'compact-blame-mode)
+(add-hook 'emacs-lisp-mode-hook 'compact-blame-mode)
 
 (defun tune-dabbrev ()
   (modify-syntax-entry ?/ ".")
@@ -411,16 +450,24 @@
    (file-name-nondirectory (buffer-file-name)))))
 (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
-(defun vg-tune-compilation (procname)
-  "this is for grep to stop without confirmation when 
-next grep is started"
-  (set-process-query-on-exit-flag
-   (get-buffer-process (current-buffer)) nil)
-  ;; get '-' character out of "symbol" class
-  (modify-syntax-entry ?- ".")
-  (modify-syntax-entry ?< ".")
-  (modify-syntax-entry ?> ".")
-  (vg-message "Char classes:-=%s" (string (char-syntax ?-))))
+(defun Vg-classify-as-punctuation (chars)
+ (let* ((before "")
+		(after (concat (mapcar
+						(lambda (c)
+						 (setq before (concat before
+									   (string (char-syntax c))))
+						 (modify-syntax-entry c ".")
+						 (char-syntax c)) chars))))
+  (vg-message "Char classes '%s' = '%s' -> '%s'" chars before after)))
+
+(defun vg-tune-compilation (proc)
+ "this is for grep to stop without confirmation when
+ next grep is started"
+ (set-process-query-on-exit-flag proc nil)
+ (setq compilation-scroll-output
+  (not (string-match "/tasks.py" (format "%s" (process-command proc)))))
+ ;; get characters out of "symbol" class
+ (Vg-classify-as-punctuation "-<>/"))
 (add-hook 'compilation-start-hook 'vg-tune-compilation)
 
 (defun vg-tune-log-view ()
@@ -428,17 +475,15 @@ next grep is started"
 (add-hook 'log-view-mode-hook 'vg-tune-log-view)
 
 (defun vg-tune-lisp ()
-  (modify-syntax-entry ?@ ".")
-  (vg-message "Char classes:@=%s" (string (char-syntax ?@))))
+  (Vg-classify-as-punctuation "@/"))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
 
 (defun vg-after-save ()
-  (when (and
-		 (string-equal (format "%s" mode-name) "Emacs-Lisp")
-		 (not
-		  (string-match "/\\(shoe\\|.dir-locals\\).el$" buffer-file-name)))
-	(vg-message "Saved %s & evaluating..." buffer-file-name)
-	(eval-buffer)))
+ (when
+  (and (string-equal (format "%s" mode-name) "Emacs-Lisp")
+   (not (string-match "/\\(shoe\\|.dir-locals\\).el$" buffer-file-name)))
+  (vg-message "Saved %s & evaluating..." buffer-file-name)
+  (eval-buffer)))
 (add-hook 'after-save-hook 'vg-after-save)
 
 (defun vg-file-open ()
@@ -495,7 +540,7 @@ next grep is started"
 	;;     or vc-run-delayed
    (pop-to-buffer bn)))
 
-;; This one is from https://zck.org/emacs-move-file
+;; This one is originally from https://zck.org/emacs-move-file
 (defun move-file (new-location)
  "Write this file to NEW-LOCATION, and delete the old one."
  (interactive
@@ -506,6 +551,11 @@ next grep is started"
 		   default-directory
 		   (expand-file-name (file-name-nondirectory (buffer-name))
 			default-directory))))))
+ ;; Add `mv` command semantics
+ (when (file-directory-p new-location)
+  (setq new-location
+   (expand-file-name (file-name-nondirectory buffer-file-name)
+	new-location)))
  (when (file-exists-p new-location)
   (delete-file new-location))
  (let ((old-location (expand-file-name (buffer-file-name))))
@@ -564,19 +614,16 @@ next grep is started"
  (switch-to-buffer "*grep*")
  (command-execute 'grep))
 
-(defun gh ()
- "Show last commit"
- (interactive)
+(defun g1 () "Show last commit" (interactive)
  (Compact-blame-show-commit "HEAD"))
+(defalias 'gh 'g1)
 
-(defun g0 ()
- "Show not committed changes"
- (interactive)
+(defun g0 () "Show not committed changes" (interactive)
  (Compact-blame-show-commit "0000000000000000000000000000000000000000"))
 (defalias 'gj 'g0)
 
 (defun lm (path) "Load man page from path" (interactive "f")
- (message "Path='%s'" path)
+ (vg-message "Path='%s'" path)
  (man (format "-l %s" path)))
 
 (setq tramp-mode nil)
@@ -586,11 +633,13 @@ next grep is started"
 (defalias 'bc 'emacs-lisp-byte-compile-and-load)
 (defalias 'cbm 'compact-blame-mode)
 (defalias 'gl 'git-log)
+(defalias 'vcprl 'vc-print-root-log)
 (defun vtt () (interactive)
  (require 'etags)
  (tags-reset-tags-tables)
  (command-execute 'visit-tags-table))
-(setq compile-command "scl enable gcc-toolset-12 'make -k'")
+(setq compile-command "systemd-inhibit --what=handle-lid-switch scl \
+enable gcc-toolset-12 'make -k'")
 
 (server-start)
 (setenv "EDITOR"
@@ -602,6 +651,7 @@ next grep is started"
 (setenv "PAGER" "cat")
 (setenv "PATH"
  "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
+(setenv "GCC_COLORS" "")
 (setq-default case-fold-search nil case-replace nil
 			  dabbrev-case-fold-search nil)
 (setq revert-without-query '(".*"))
@@ -626,6 +676,7 @@ next grep is started"
 (grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
 (grep-apply-setting 'grep-use-null-device nil)
 (setq sh-basic-offset 2)
-
-(message "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
-
+(menu-bar-mode -1)
+(split-window-right)
+(vg-message
+ "tab-width=%s case-fold-search=%s" tab-width case-fold-search)

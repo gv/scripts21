@@ -1,4 +1,4 @@
-#!/usr/bin/env nodejs
+#!/usr/bin/env node
 
 /*
   Prints every leaf value in JSON file on a single line prepended by all the
@@ -38,7 +38,7 @@ function printFile(path) {
 
 function printObject(prefix, d) {
 	try {
-		if(typeof d != "string") {
+		if(typeof d != "string" && typeof d != "number") {
 			for(var k in d)
 				printObject(prefix.concat(k), d[k]);
 			return;

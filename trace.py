@@ -27,6 +27,15 @@ When OpenBlock/CloseBlock are called, count and print current block depth.
 Limit stack printout to 2 frames, duplicate output to /win/kodeks/rtf2.logc,
 print paths relative to /win/kodeks.
 
+Advantages over bcc:
+ Can unwind DWARF stack
+ Synchronous, can't loose samples, doesn't need buffer size tuning
+ Works on Mac (or at least did at some point)
+
+Disadvantages re. bcc:
+ Very slow
+ lldb on Linux is buggy
+
 Bugs:
  Call stack is printed with most immediate function at the bottom, 
  instead of at the top like debuggers do...
@@ -34,6 +43,47 @@ Bugs:
 """
 from __future__ import print_function
 import argparse, re, sys, os, subprocess, json, fnmatch, struct
+
+parser = argparse.ArgumentParser(
+	description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+parser.add_argument(
+	"-l", "--list", action="store_true", help="List symbols in libs")
+parser.add_argument(
+	"-L", "--list2", action="store_true", help="List all symbols")
+parser.add_argument(
+	"-m", "--modules", action="store_true", help="List all modules")
+parser.add_argument(
+	"-t", "--tid", help="Inspect thread TID")
+parser.add_argument(
+	"-d", "--with-dtrace",
+	help="Use collecttcp.d with STOP set to WITH_DTRACE")
+parser.add_argument(
+	"-S", "--ssl", action="store_true", help="Trace SSL reads & writes")
+parser.add_argument(
+	"-T", "--sslt", action="store_true", help="Trace SSL, show as text")
+parser.add_argument(
+	"-D", "--deferred", action="store_true",
+	help="Don't terminate if bp addresses not found (lldb BPs are deferred at least on Linux")
+parser.add_argument(
+	"-r", "--launch", help="Launch command line with spaces")
+parser.add_argument(
+	"--events", action="store_true",
+	help="Trace handleEvent methods in every class and parse NSEvent structs")
+parser.add_argument(
+	"--output", "-o", help="Text output path")
+parser.add_argument(
+	"--python", "-p", action="store_true", help="Only python commands")
+parser.add_argument(
+	"--slen", "-s", help="Stack limit")
+parser.add_argument(
+	"--wait", "-w", action="store_true", help="Wait if process doesn't exist")
+#parser.add_argument(
+#	"--nolib", action="store_true",
+#	help="Set BPs in main executable only")
+parser.add_argument("-v", "--verbose", action="store_true")
+parser.add_argument("FUNCTION", nargs="*")
+parser.add_argument("PID", nargs="?")
+
 try:
 	import lldb
 except ImportError:
@@ -49,9 +99,10 @@ import lldb
 
 psize = 8
 
-def check(error):
+def check(error, result=None):
 	if error.fail:
 		raise Exception(str(error))
+	return result
 
 def rightLimited(s, size):
 	if len(s) < size - 3:
@@ -101,7 +152,8 @@ class Util:
 class TracePoint(Util):
 	instancesById = {}
 
-	def __init__(self):
+	def __init__(self, options=None):
+		self.options = options
 		self.count = 0
 		self.debuggerBps = []
 		self.filters = []
@@ -123,12 +175,15 @@ class TracePoint(Util):
 		self.instancesById[c] = self
 		return self
 
-	def removeInvalidFunctions(self, ff):
+	def removeInvalidFunctions(self, ff, name=None):
 		result = []
 		for i in range(len(ff)):
 			if ff[i].symbol.name == None:
 				continue
-			print("name=%s" % ff[i].symbol.name)
+			if name and ff[i].symbol.name != name:
+				continue
+			print("name='%s' mod='%s'" % (
+				ff[i].symbol.name, ff[i].symbol.addr.module))
 			result += [ff[i]]
 		return result
 	
@@ -140,6 +195,8 @@ class TracePoint(Util):
 			return None
 		if len(ff) != 1:
 			ff = self.removeInvalidFunctions(ff)
+		if len(ff) != 1:
+			ff = self.removeInvalidFunctions(ff, name)
 		if len(ff) == 0:
 			return None
 		if len(ff) != 1:
@@ -458,7 +515,7 @@ class SSLReadTrace(TracePoint):
 class OpensslReadTrace(SSLReadTrace):
 	def getAddrs(self):
 		self.symbolName = "SSL_read"
-		raise "TODO"
+		raise Exception("TODO")
 
 class OpensslWriteTrace(SSLWriteTrace):
 	def getAddrs(self, target, process):
@@ -466,10 +523,19 @@ class OpensslWriteTrace(SSLWriteTrace):
 		return []
 
 	def trace(self, frame, process, error):
-		buf = frame.reg["rsi"].GetValueAsUnsigned()
-		size = frame.reg["rdx"].GetValueAsUnsigned()
-		print("read %d bytes:" % size)
-		hexDumpMem(process, buf, buf + size, error)
+		buf = frame.reg["rsi"].GetValueAsUnsigned() # arg 2
+		size = frame.reg["rdx"].GetValueAsUnsigned() # arg 3
+		print("write %d bytes:" % size)
+		if self.options.sslt:
+			bt = check(error, process.ReadMemory(buf, size, error))
+			print(bt.decode("utf-8"))
+		else:
+			hexDumpMem(process, buf, buf + size, error)
+
+class MozillaWriteTrace(OpensslWriteTrace):
+	def getAddrs(self, target, process):
+		self.symbolName = "PR_Send"
+		return []
 
 class NSEvent(Util):
 	types = dict(
@@ -622,7 +688,8 @@ class Process(Util):
 		self.error = self.process.Detach()
 		if not self.error.success:
 			msg = str(self.error)
-			if msg != "error: Sending disconnect packet failed.":
+			if msg != "error: Sending disconnect packet failed." and\
+			   msg != "error: Sending isconnect packet failed.":
 				raise Exception(str(self.error))
 		self.debugger.DeleteTarget(self.target)
 		sys.stderr.write("Done\n")
@@ -701,8 +768,9 @@ class Process(Util):
 					print(" Addr=%x" % loc.GetLoadAddress())
 		self.setBpIfExists(SSLReadTrace())
 		self.setBpIfExists(SSLWriteTrace())
-		self.setBpIfExists(OpensslWriteTrace())
-		if self.count.bpLocations == 0:
+		self.setBpIfExists(OpensslWriteTrace(self.options))
+		self.setBpIfExists(MozillaWriteTrace(self.options))
+		if self.count.bpLocations == 0 and not self.options.deferred:
 			raise Exception("No SSL functions found")
 		self.runTrace()
 
@@ -900,6 +968,8 @@ class Tool:
 		self.options = options
 
 	def run(self):
+		if self.options.sslt:
+			self.options.ssl = True
 		if self.options.tid:
 			tid = int(self.options.tid)
 		if self.options.with_dtrace:
@@ -992,39 +1062,4 @@ class Tool:
 				q.inspect(int(m.group(2)))
 				q.unload()
 		
-
-parser = argparse.ArgumentParser(
-	description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-parser.add_argument(
-	"-l", "--list", action="store_true", help="List symbols in libs")
-parser.add_argument(
-	"-L", "--list2", action="store_true", help="List all symbols")
-parser.add_argument(
-	"-m", "--modules", action="store_true", help="List all modules")
-parser.add_argument(
-	"-t", "--tid", help="Inspect thread TID")
-parser.add_argument(
-	"-d", "--with-dtrace",
-	help="Use collecttcp.d with STOP set to WITH_DTRACE")
-parser.add_argument(
-	"-S", "--ssl", action="store_true", help="Trace SSL reads & writes")
-parser.add_argument(
-	"-r", "--launch", help="Launch command line with spaces")
-parser.add_argument(
-	"--events", action="store_true",
-	help="Trace handleEvent methods in every class and parse NSEvent structs")
-parser.add_argument(
-	"--output", "-o", help="Text output path")
-parser.add_argument(
-	"--python", "-p", action="store_true", help="Only python commands")
-parser.add_argument(
-	"--slen", "-s", help="Stack limit")
-parser.add_argument(
-	"--wait", "-w", action="store_true", help="Wait if process doesn't exist")
-#parser.add_argument(
-#	"--nolib", action="store_true",
-#	help="Set BPs in main executable only")
-parser.add_argument("-v", "--verbose", action="store_true")
-parser.add_argument("FUNCTION", nargs="*")
-parser.add_argument("PID", nargs="?")
 Tool(parser.parse_args()).run()
