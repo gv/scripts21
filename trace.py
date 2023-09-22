@@ -3,8 +3,9 @@
 
 Tracepoint syntax:
 
-(NAME_GLOB*[>TARGET]|~NAME|0x<addr>)[@FILTER[@...]][#COMMAND[#...]]
+([/]NAME_GLOB*[>TARGET]|~NAME|0x<addr>)[@FILTER[@...]][#COMMAND[#...]]
 
+/: trace return
 NAME_GLOB*: BP on every symbol with full name matching NAME_GLOB*
  (nb: full name in C++ has `(arg list)` at the end)
 >TARGET: Set BPs an all `call` instructions to this target inside 
@@ -24,7 +25,7 @@ trace.py\
 
 Print arg 1 of startElementImpl and endElementImpl as ICU UnicodeStrings.
 When OpenBlock/CloseBlock are called, count and print current block depth.
-Limit stack printout to 2 frames, duplicate output to /win/kodeks/rtf2.logc,
+Limit stack printout to 2 frames, duplicate output to /win/kodeks/rtf2.logc, 
 print paths relative to /win/kodeks.
 
 Advantages over bcc:
@@ -254,6 +255,7 @@ class NamedTracePoint(TracePoint):
 		self.commands = []
 		self.calls = None
 		self.stackEnabled = True
+		self.filename, self.line = None, None
 		parts = name.split("#")
 		if len(parts) > 1:
 			name = parts[0]
@@ -277,13 +279,17 @@ class NamedTracePoint(TracePoint):
 				raise Exception("No calls in BreakpointCreateByName")
 			name = parts[0]
 			self.calls = parts[1:]
-		self.symbolName = name
+		if ":" in name:
+			self.filename, self.line = name.split(":")
+			self.line = int(self.line)
+		else:
+			self.symbolName = name
 		return self
 
 	def getAddrs(self, target, process):
 		if self.addr:
 			return [self.addr]
-		if not self.nameIsFull:
+		if self.filename or not self.nameIsFull:
 			return [None]
 		func = self.getFunc(self.symbolName, target)
 		if not self.calls:
@@ -319,6 +325,7 @@ class NamedTracePoint(TracePoint):
 		self.filters = other.filters
 		self.nameIsFull = other.nameIsFull
 		self.symbolName = other.symbolName
+		self.filename, self.line = other.filename, other.line
 		return self
 
 	def substCommand(self, frame, cmd):
@@ -744,10 +751,10 @@ class Process(Util):
 			
 	def handleBreakpoint(self, frame, bp_loc):
 		tr = self.breakpoints.get(frame.pc)
-		if 0 and tr is None and bp_loc is None:
+		if 1 and tr is None and bp_loc is None:
 			print("stopped in '%s'" % frame.name)
 		try:
-			tr = tr or self.breakpoints[frame.name]
+			tr = tr or self.breakpoints[frame.name.split("@")[0]]
 		except KeyError:
 			return False
 		if tr.filterAccepts(frame, self):
@@ -759,13 +766,6 @@ class Process(Util):
 		return True
 
 	def traceSsl(self):
-		if 0:
-			b2 = self.target.BreakpointCreateByName("SSLWrite")
-			b2.SetScriptCallbackFunction("callProcessHandleBp")
-			for c in [b, b2]:
-				print("Breakpoint %d:" % c.id)
-				for loc in c:
-					print(" Addr=%x" % loc.GetLoadAddress())
 		self.setBpIfExists(SSLReadTrace())
 		self.setBpIfExists(SSLWriteTrace())
 		self.setBpIfExists(OpensslWriteTrace(self.options))
@@ -811,6 +811,9 @@ class Process(Util):
 			self.breakpoints[addr] = t
 			self.print("Setting bp '%s' to %X" % (t.id, addr))
 			b = self.target.BreakpointCreateByAddress(addr)
+		elif t.filename:
+			b = self.target.BreakpointCreateByLocation(
+				t.filename, t.line) 
 		else:
 			self.breakpoints[t.symbolName] = t
 			self.print("Setting bp to '%s'" % t.symbolName)

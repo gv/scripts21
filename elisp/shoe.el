@@ -261,9 +261,12 @@
   (Vg-open-browser (format "https://www.google.com/search?q=%s" q))))
 
 (defun google-line () (interactive)
- (Vg-open-browser
-  (format "https://www.google.com/search?q=%s"
-   (replace-regexp-in-string "[[] []]\\|Q:" "" (thing-at-point 'line)))))
+ (if (use-region-p)
+  (google-at-point)
+  (Vg-open-browser
+   (format "https://www.google.com/search?q=%s"
+	(replace-regexp-in-string "[[] []]\\|Q:" ""
+	 (thing-at-point 'line))))))
 
 (defun Vg-open-browser (url)
  (if (equal window-system 'ns)
@@ -467,7 +470,8 @@
  (setq compilation-scroll-output
   (not (string-match "/tasks.py" (format "%s" (process-command proc)))))
  ;; get characters out of "symbol" class
- (Vg-classify-as-punctuation "-<>/"))
+ (Vg-classify-as-punctuation "-<>/")
+ (highlight-regexp "file://[^\s]+"))
 (add-hook 'compilation-start-hook 'vg-tune-compilation)
 
 (defun vg-tune-log-view ()
@@ -477,6 +481,10 @@
 (defun vg-tune-lisp ()
   (Vg-classify-as-punctuation "@/"))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
+
+(defun Vg-tune-tcl ()
+ (Vg-classify-as-punctuation ":/"))
+(add-hook 'tcl-mode-hook 'Vg-tune-tcl)
 
 (defun vg-after-save ()
  (when
@@ -489,10 +497,6 @@
 (defun vg-file-open ()
  (highlight-regexp "[[:nonascii:]]"))
 (add-hook 'find-file-hook 'vg-file-open)
-
-(if window-system
-	(global-set-key (kbd "M-[") 'gtags-find-rtag)
-)
 
 ; Set file types.
 (add-to-list 'auto-mode-alist '("\\.ks\\'" . javascript-mode))
@@ -568,6 +572,7 @@
 		 (not (string-equal old-location new-location)))
    (delete-file old-location))))
 
+;; These are from https://www.emacswiki.org/emacs/MoveText
 (defun move-text-internal (arg)
   (cond
    ((and mark-active transient-mark-mode)
