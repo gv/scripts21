@@ -3,6 +3,18 @@
 import sys, os, argparse, subprocess, datetime, shutil, errno, re,\
 	stat, shlex
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument(
+	"--gprof", action="store_true", help="Compile with -pg")
+parser.add_argument(
+	"--command", "-c", action="store_true", help="Run command")
+parser.add_argument(
+	"--docker", "-d", action="store_true",
+	help="Run command in a container")
+parser.add_argument("--codeql", "-q", help="Run codeql")
+parser.add_argument("--alert", "-a", action="store_true")
+parser.add_argument("POSITIONAL", nargs="*")
+
 def nn(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
 
@@ -116,7 +128,7 @@ class BuildLog:
 		self.read(p.stdout, out)
 		r = p.wait()
 		if r != 0:
-			raise Exception("r=%d" % (r))
+			raise Exception("Status %d from '%s'" % (r, shlex.join(cmd)))
 
 class BuildLogTool:
 	def __init__(self, args):
@@ -149,8 +161,6 @@ class BuildLogTool:
 				codeql, "database", "finalize", self.args.codeql])
 		self.reportCounts([bl.lines, bl.cc, bl.compiles])
 				
-			
-
 class Build:
 	def __init__(self, conf, args):
 		self.args = args
@@ -182,12 +192,21 @@ class Build:
 		self.saved = Count("saved")
 
 	def run(self):
-		print("paths: build='%s' absBase='%s'" % (
-			self.paths.build, self.paths.absBase))
-		self.mkdir(self.paths.build)
-		self.loadName()
-		self.runBuildCommands()
-		self.saveArtefacts()
+		msg = None
+		try:
+			self.mkdir(self.paths.build)
+			self.loadName()
+			self.runBuildCommands()
+			self.saveArtefacts()
+			msg = "Done build %s in %s (saved %s)\n" % (
+				self.getName(), self.bl.describeTime(), self.saved.size)
+		except Exception as e:
+			msg = str(e)
+		print(msg)
+		# TODO Archive this final line as well
+		if self.args.alert:
+			subprocess.check_call([
+				"zenity", "--info", "--text=" + msg])
 
 	def checkOutput(self, cmd, **kw):
 		print("Running '%s'..." % (shlex.join(cmd)))
@@ -257,9 +276,6 @@ class Build:
 				"-*- mode: compilation -*-\n", log)
 			self.bl.add("Build %s\n" % self.getName(), log)
 			self.logBuildCommands(log)
-			self.bl.add("Done build %s in %s (saved %s)\n" % (
-				self.getName(), self.bl.describeTime(), self.saved.size),
-						 log)						 
 			
 	def expand(self, arg):
 		if "$make" == arg:
@@ -270,6 +286,8 @@ class Build:
 
 	def logBuildCommands(self, log):
 		for cmd in self.getConf("commands"):
+			if hasattr(cmd, "split"):
+				cmd = cmd.split(" ")
 			cmd = sum([self.expand(a) for a in cmd], [])
 			prefix = self.getConf("cmdPrefix")
 			if prefix:
@@ -295,16 +313,6 @@ class Build:
 			self.bl.logCommand(cmd, log, self.env)
 			
 				
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument(
-	"--gprof", action="store_true", help="Compile with -pg")
-parser.add_argument(
-	"--command", "-c", action="store_true", help="Run command")
-parser.add_argument(
-	"--docker", "-d", action="store_true",
-	help="Run command in a container")
-parser.add_argument("--codeql", "-q", help="Run codeql")
-parser.add_argument("POSITIONAL", nargs="*")
 args = parser.parse_args()
 if __name__ == "__main__":
 	if not args.command:
