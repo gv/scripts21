@@ -11,6 +11,9 @@ parser.add_argument(
 parser.add_argument(
 	"--docker", "-d", action="store_true",
 	help="Run command in a container")
+parser.add_argument(
+	"--lid", action="store_true",
+	help="Don't inhibit systemd lid switch handler")
 parser.add_argument("--codeql", "-q", help="Run codeql")
 parser.add_argument("--alert", "-a", action="store_true")
 parser.add_argument("POSITIONAL", nargs="*")
@@ -55,7 +58,8 @@ class Command:
 	def isCompile(self):
 		return "-c" in self.argv
 
-class BuildLog:
+
+class Input:
 	def __init__(self, args, paths):
 		self.args = args
 		self.takeoff = datetime.datetime.now()
@@ -72,7 +76,6 @@ class BuildLog:
 		# or --privilege 
 		self.prefix += ["setarch", "x86_64", "-R"]
 
-
 	def getConf(self, name, default=None):
 		if name == "dir":
 			return os.getcwd()
@@ -81,7 +84,9 @@ class BuildLog:
 		self.lines.size += 1
 		if hasattr(line, "decode"):
 			line = line.decode("utf-8")
+		# Remove coloring
 		line = re.sub(r"(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]", "", line)
+		# Windows paths must be converted before putting into _b.log
 		m = re.match(r"\s*([\w:\\._-]+)([(]\d+[)]:.+)", line)
 		if m:
 			path, rest = m.groups()
@@ -90,6 +95,12 @@ class BuildLog:
 			path = path.replace("\\", "/")
 			line = path + rest
 		line = line.replace("\r", "")
+		leftToRight = True
+		if leftToRight:
+			m = re.match(r"([/\w.]+:\d+)(.+)", line)
+			if m:
+				path, rest = m.groups()
+				line = "%s at %s" % (rest, path)
 		if not line.endswith("\n"):
 			line += "\n"
 		if log:
@@ -130,37 +141,7 @@ class BuildLog:
 		if r != 0:
 			raise Exception("Status %d from '%s'" % (r, shlex.join(cmd)))
 
-class BuildLogTool:
-	def __init__(self, args):
-		self.args = args
-		self.output = None
-		
-	def reportCounts(self, counts):
-		for count in counts:
-			print(" %16s %s" % (nn(count.size), count.name))
-			if self.output:
-				self.output.write(" %16s %s\n" % (
-					nn(count.size), count.name))
-				
-	def run(self):
-		bl = BuildLog(args, Paths(self, os.getcwd(), self.args))
-		bl.verbose = None
-		for path in self.args.POSITIONAL:
-			bl.read(open(path, "r"), None)
-		if self.args.codeql:
-			codeql = os.path.expanduser("~/codeql/codeql")
-			extrLog = BuildLog(args, bl.paths)
-			extrLog.logCommand([
-				codeql, "database", "init", self.args.codeql,
-				"--language=cpp", "--source-root=.", "--overwrite"])
-			for command in bl.commands:
-				extrLog.logCommand([
-					codeql, "database", "trace-command", "--",
-					self.args.codeql] +	command.argv)
-			extrLog.logCommand([
-				codeql, "database", "finalize", self.args.codeql])
-		self.reportCounts([bl.lines, bl.cc, bl.compiles])
-				
+# TODO Should be subclass of Input
 class Build:
 	def __init__(self, conf, args):
 		self.args = args
@@ -192,6 +173,11 @@ class Build:
 		self.saved = Count("saved")
 
 	def run(self):
+		if not self.args.lid:
+			cmd = ["systemd-inhibit", "--what=handle-lid-switch"] +\
+				sys.argv + ["--lid"]
+			print("Running '%s'..." %  shlex.join(cmd))
+			os.execvp(cmd[0], cmd)
 		msg = None
 		try:
 			self.mkdir(self.paths.build)
@@ -270,7 +256,7 @@ class Build:
 		return self.pconf.get(name, self.conf.get(name, default))
 
 	def runBuildCommands(self):
-		self.bl = BuildLog(args, self.paths) 
+		self.bl = Input(args, self.paths) 
 		with open(self.paths.log, "wt") as log:
 			self.bl.add(
 				"-*- mode: compilation -*-\n", log)
@@ -295,12 +281,14 @@ class Build:
 			elif "win32" != self.platform:
 				dockerImage = self.getConf("docker")
 				if dockerImage:
+					# TODO Kill all previous builds
+					# command: docker ps --filter ancestor=IMAGE
 					top = self.getConf("top", self.paths.base)
 					base = os.path.normpath(
 						os.path.join(os.getcwd(), top))
 					build = os.path.realpath(self.paths.build)
 					self.bl.prefix = [
-						"docker", "run",
+						"docker", "run", "--rm",
 						"-v", f"{base}:{base}"]
 					if base != build:
 						self.bl.prefix +=["-v", f"{build}:{build}"]
@@ -312,10 +300,42 @@ class Build:
 						"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)
 			
+class BuildLogTool:
+	def __init__(self, args):
+		self.args = args
+		self.output = None
+		
+	def reportCounts(self, counts):
+		for count in counts:
+			print(" %16s %s" % (nn(count.size), count.name))
+			if self.output:
+				self.output.write(" %16s %s\n" % (
+					nn(count.size), count.name))
+				
+	def run(self):
+		# Inputs are log files
+		bl = Input(args, Paths(self, os.getcwd(), self.args))
+		bl.verbose = None
+		for path in self.args.POSITIONAL:
+			bl.read(open(path, "r"), None)
+		if self.args.codeql:
+			codeql = os.path.expanduser("~/codeql/codeql")
+			extrLog = Input(args, bl.paths)
+			extrLog.logCommand([
+				codeql, "database", "init", self.args.codeql,
+				"--language=cpp", "--source-root=.", "--overwrite"])
+			for command in bl.commands:
+				extrLog.logCommand([
+					codeql, "database", "trace-command", "--",
+					self.args.codeql] +	command.argv)
+			extrLog.logCommand([
+				codeql, "database", "finalize", self.args.codeql])
+		self.reportCounts([bl.lines, bl.cc, bl.compiles])
+				
 				
 args = parser.parse_args()
 if __name__ == "__main__":
-	if not args.command:
+	if not args.command and not args.docker:
 		BuildLogTool(args).run()
 		sys.exit(0)
 	if not args.docker:
