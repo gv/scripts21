@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 from __future__ import print_function
 "LLDB commands to get stuff from crash dumps"
 import argparse, re, os, sys, time, subprocess, urllib.request
@@ -12,7 +12,8 @@ def cut(s, limit):
 	return len(s) > (limit+3) and "%s..." % s[:limit] or s
 
 def getId(m):
-	return "".join(str(m.uuid).split("-")).upper() + "0"
+	s = m.GetUUIDString()
+	return s and "".join(s.split("-")).upper() + "0"
 
 def num(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
@@ -64,8 +65,8 @@ class Target(Util):
 		self.target = self.check(self.debugger.CreateTarget(
 			"", "", "", True, self.error))
 		# Hack: add mapping to nonexistent files so
-		# ModuleList::GetSharedModule gets called first without a real path
-		# and finds storage files in target.exec-search-paths
+		# ModuleList::GetSharedModule gets called first without a real
+		# path and finds storage files in target.exec-search-paths
 		if self.args.storage:
 			self.check(self.target.AppendImageSearchPath(
 				"/Volumes", self.args.storage, self.error))
@@ -96,7 +97,8 @@ class Target(Util):
 	def getName(self, m):
 		if not m.IsValid():
 			return "-"
-		if m.file.fullpath.startswith(self.args.storage):
+		if self.args.storage and\
+		   m.file.fullpath.startswith(self.args.storage):
 			return m.file.fullpath
 		parts = m.file.fullpath.split(os.sep)
 		if len(parts) <= 1:
@@ -104,11 +106,12 @@ class Target(Util):
 		return "/%s/.../%s" % (parts[1], parts[-1])
 
 	def getSymbolFileName(self, m):
-		if m.GetSymbolFileSpec() == m.file:
+		sfs = m.GetSymbolFileSpec()
+		if sfs == m.file:
 			return "-"
-		if re.match(".+[.]dSYM/", m.GetSymbolFileSpec().dirname):
+		if sfs.dirname and re.match(".+[.]dSYM/", sfs.dirname):
 			return "dSYM"
-		return m.GetSymbolFileSpec()
+		return sfs
 
 	def getSourceLine(self, f):
 		if not f.line_entry.IsValid():
@@ -160,42 +163,59 @@ class Target(Util):
 	
 	def printStacks(self):
 		for t in self.process.threads:
-			self.printStackInfo(t)
-			for f in t.frames:
-				printed = 0
-				for prefix in self.getPossibleSourceLines(f, "%s:%d: "):
-					if printed:
-						sys.stdout.write("...\n")
-					sys.stdout.write(prefix)
-					sys.stdout.flush()
-				print("%3d %3d %16X '%s' %s (%s)" % (
-					t.idx, f.idx, f.pc, f.addr.symbol.name,
-					self.getName(f.addr.module),
-					self.getSymbolFileName(f.addr.module)))
-				# arguments, locals, statics, in_scope_only
-				for v in f.GetVariables(True, True, False, True):
-					print("'%s' l='%s' v='%s' t=%s(%d)" % (
-						v.name, v.location, v.value,
-						v.type.name, v.type.size))
+			self.printStack(t)
+
+	def printStack(self, t):
+		self.printStackInfo(t)
+		for f in t.frames:
+			printed = 0
+			for prefix in self.getPossibleSourceLines(f, "%s:%d: "):
+				if printed:
+					sys.stdout.write("...\n")
+				sys.stdout.write(prefix)
+				sys.stdout.flush()
+			print("%3d %3d %16X '%s' %s (%s)" % (
+				t.idx, f.idx, f.pc, f.addr.symbol.name,
+				self.getName(f.addr.module),
+				self.getSymbolFileName(f.addr.module)))
+			continue
+			# arguments, locals, statics, in_scope_only
+			for v in f.GetVariables(True, True, False, True):
+				print("'%s' l='%s' v='%s' t=%s(%d)" % (
+					v.name, v.location, v.value,
+					v.type.name, v.type.size))
 
 	def printPointersFromStack(self, n):
-		t = self.process.GetThreadByIndexID(n)
-		if not t.IsValid():
-			raise Exception("No thread %d" % n)
+		if type(n) is int:
+			t = self.process.GetThreadByIndexID(n)
+			if not t.IsValid():
+				raise Exception("No thread %d" % n)
+		else:
+			t = n
 		self.printStackInfo(t)
+		self.printPointer(0, "pc: ", t.frames[0].pc)
 		sp = t.frames[0].sp
 		reg = lldb.SBMemoryRegionInfo()
 		check(self.process.GetMemoryRegionInfo(sp, reg))
-		if self.args.threadm:
+		if self.args.threadm or self.args.threadX:
 			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
-				reg.GetRegionBase(), reg.GetRegionEnd()))
+				sp, reg.GetRegionEnd()))
 		else:
+#					reg.GetRegionBase(), reg.GetRegionEnd(), ptrSize):
 			for pos in range(
-					reg.GetRegionBase(), reg.GetRegionEnd(), ptrSize):
-				self.printPointerAt(pos)
+					sp, reg.GetRegionEnd(), ptrSize):
+				self.printPointerAt(pos, True)
 
-	def printPointerAt(self, pos):
-		p = self.check(self.process.ReadPointerFromMemory(pos, self.error))
+	def printPointerAt(self, pos, execOnly=False):
+		p = self.process.ReadPointerFromMemory(pos, self.error)
+		if self.error.fail:
+			print("read pos=%X error='%s'" % (pos, self.error))
+			return
+		if execOnly:
+			reg = lldb.SBMemoryRegionInfo()
+			check(self.process.GetMemoryRegionInfo(p, reg))
+			if not reg.IsExecutable():
+				return
 		self.printPointer(pos, "%x: " % pos, p)
 
 	def printPointer(self, pos, prefix, p):
@@ -209,7 +229,7 @@ class Target(Util):
 		for s in self.getPossibleSourceLines(addr, " at %s:%d"):
 			sys.stdout.write(s)
 			sys.stdout.flush()
-		sys.stdout.write("\n")
+			sys.stdout.write("\n")
 		block = addr.block
 		count = 0
 		while block.IsValid():
@@ -304,6 +324,9 @@ class Target(Util):
 	def printModules(self, tool):
 		count = Count()
 		mtime = time.localtime(os.path.getmtime(self.path))
+		if self.args.modules:
+			print("\
+nsect, all sections size on disk, id, load addr, name, symfile")
 		for m in self.target.modules:
 			path = m.file.fullpath;
 			parts = path.split("/")
@@ -493,8 +516,9 @@ class Tool(Util):
 			self.verb("DONE name=%s\n" % self.debugger.GetInstanceName())
 		# This is faster than replacing modules in fixModulesNotInStorage
 		if self.args.storage:
-			dirs = [os.path.join(self.args.storage, x) for x in os.listdir(
-				self.args.storage) if not x.startswith(".")]
+			dirs = [os.path.join(self.args.storage, x) for
+					x in os.listdir(self.args.storage) if
+					not x.startswith(".")]
 			self.setVar("target.exec-search-paths", " ".join(dirs))
 		if self.args.dverbose:
 			# doesn't check categories
@@ -509,10 +533,14 @@ class Tool(Util):
 				self.args.attachname))
 		self.args.DMPFILE.sort(key=os.path.getmtime, reverse=True)
 		for path in self.args.DMPFILE:
-			t = Target(self.args, self.debugger).load(path)
-			if 0 and self.args.storage:
-				t.fixModulesNotInStorage()
-			self.handleTarget(t)
+			try:
+				t = Target(self.args, self.debugger).load(path)
+				if 0 and self.args.storage:
+					t.fixModulesNotInStorage()
+				self.handleTarget(t)
+			except Exception as e:
+				if not self.args.stat: raise
+				print("%s = %s" % (path, e))
 		self.count = WorkCount(len(self.work))
 		for task in self.work:
 			task.run(self)
@@ -524,8 +552,14 @@ class Tool(Util):
 		elif self.args.threadn or self.args.threadm:
 			t.printPointersFromStack(
 				int(self.args.threadn or self.args.threadm, 10))
+		elif self.args.thread or self.args.threadX:
+			t.printPointersFromStack(t.process.selected_thread)
 		elif self.args.threads:
 			t.printStacks()
+		elif self.args.bt:
+			print(t.path)
+			t.doCmd("bt")
+			#t.printStack(t.process.selected_thread)
 		elif self.args.modules or self.args.absent:
 			t.printModules(self)
 		elif not self.args.stat:
@@ -540,12 +574,14 @@ if __name__ == "__main__":
 	parser.add_argument(
 		"-m", "--modules", action="store_true", help="List binaries")
 	parser.add_argument(
-		"-a", "--absent", action="store_true", help="List absent binaries")
+		"-a", "--absent", action="store_true",
+		help="List binaries not in storage")
 	parser.add_argument(
 		"-s", "--stat", action="store_true",
 		help="Print a line of numbers for every file")
 	parser.add_argument(
-		"-d", "--download", help="Symbol server URL to download symbols from")
+		"-d", "--download",
+		help="Symbol server URL to download symbols from")
 	parser.add_argument(
 		"-r", "--storage", help="Path to binary archive")
 	parser.add_argument(
@@ -554,13 +590,23 @@ if __name__ == "__main__":
 	parser.add_argument(
 		"-n", "--attachname", help="Attach to a live process by name")
 	parser.add_argument(
-		"-t", "--threads", action="store_true", help="Print stacks")
+		"-T", "--threads", action="store_true", help="Print stacks")
+	parser.add_argument(
+		"-t", "--bt", action="store_true",
+		help="Print stack of crashed thread")
+	parser.add_argument(
+		"-x", "--thread", action="store_true", 
+		help="Print all stack entries from crashed thread")
 	parser.add_argument(
 		"-y", "--threadn", help="Print all entries from stack N")
+	parser.add_argument(
+		"-X", "--threadX", action="store_true", 
+		help="Print all entries crashed thread using `memory read -fA`")
 	parser.add_argument(
 		"-Y", "--threadm",
 		help="Print all entries from stack N using `memory read -fA`")
 	parser.add_argument("-v", "--verbose", action="store_true")
 	parser.add_argument(
-		"-b", "--dverbose", action="store_true", help="LLDB verbose output")
+		"-b", "--dverbose", action="store_true",
+		help="LLDB verbose output")
 	Tool(parser.parse_args(), None).run()

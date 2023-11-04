@@ -154,7 +154,9 @@
 (define-key global-map [M-prior] 'pop-tag-mark)
 ;; End of code navigation
 
-(define-key global-map (kbd "s-`") 'next-multiframe-window)
+;; TODO Isn't that a conventional Mac key for other window?
+;; icfp could be s-f 
+(define-key global-map (kbd "s-`") 'vg-insert-current-file-path)
 (define-key global-map (kbd "C-\\")
  (lambda () (interactive)
   (vg-message "Keyboard language switch disabled")))
@@ -196,6 +198,8 @@
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
 (define-key global-map [s-down] 'next-error)
+(define-key global-map (kbd "s-t") 'tracker-search)
+(define-key global-map (kbd "s-l") 'vg-run-line)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -237,7 +241,11 @@
 	  (lambda () (interactive) (vg-update-font (- size 1) i)))
 	(define-key global-map (kbd "s-0")
 	  (lambda () (interactive) (vg-update-font size (1+ i))))
-	(vg-update-font size i)))
+   (vg-update-font size i)))
+
+(defun vg-insert-current-file-path () (interactive)
+ (insert
+  (buffer-file-name (window-buffer (minibuffer-selected-window)))))
 
 (defun ft-at-point () "AKA go to def" (interactive)
 	   (find-tag (find-tag-default)))
@@ -274,8 +282,10 @@
   (start-process url "*Messages*" "firefox" url)))
 
 (defun vg-open (x)
- (start-process x "*Messages*"
-  (if (equal window-system 'ns) "open" "xdg-open") x))
+ (let ((cmd (append (if (equal window-system 'ns) '("open")
+					 '("setsid" "nohup" "xdg-open")) (list x))))
+  (vg-message "Running %s" cmd)
+  (apply 'start-process (format "%s" cmd) "*Messages*" cmd)))
 
 (defun open () (interactive)
  (vg-open (expand-file-name (or buffer-file-name default-directory))))
@@ -448,9 +458,11 @@
  (define-key org-mode-map [M-up] nil)
  (define-key org-mode-map [M-down] nil)
  (auto-fill-mode 1)
+ (setq-local case-fold-search t)
  (setq-local compile-command
   (concat "/scripts/tasks.py "
-   (file-name-nondirectory (buffer-file-name)))))
+   (file-name-nondirectory (buffer-file-name))))
+ (push compile-command compile-history))
 (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
 (defun Vg-classify-as-punctuation (chars)
@@ -463,7 +475,8 @@
 						 (char-syntax c)) chars))))
   (vg-message "Char classes '%s' = '%s' -> '%s'" chars before after)))
 
-(defun vg-tune-compilation (proc)
+(setq Vg-url-pattern "\\w+://[^\s\n]+")
+(defun Vg-tune-compilation (proc)
  "this is for grep to stop without confirmation when
  next grep is started"
  (set-process-query-on-exit-flag proc nil)
@@ -471,8 +484,25 @@
   (not (string-match "/tasks.py" (format "%s" (process-command proc)))))
  ;; get characters out of "symbol" class
  (Vg-classify-as-punctuation "-<>/")
- (highlight-regexp "file://[^\s]+"))
-(add-hook 'compilation-start-hook 'vg-tune-compilation)
+ (define-key compilation-mode-map "o" 'vg-open-url)
+ (define-key compilation-mode-map "f" 'vg-firefox-url)
+ (highlight-regexp Vg-url-pattern))
+(add-hook 'compilation-start-hook 'Vg-tune-compilation)
+
+(defun tracker-search () (interactive)
+ (let ((cmd (read-shell-command "Command: "
+			 (concat "tracker search --limit=999 --disable-color "
+			  (find-tag-default)))))
+  (compilation-start cmd)))
+
+(defun vg-open-url () (interactive)
+ (let* ((line (thing-at-point 'line t))
+		(url
+		 (if (string-match Vg-url-pattern line)
+		  (match-string 0 line))))
+  (if url
+   (vg-open url)
+   (message "No url on current line"))))
 
 (defun vg-tune-log-view ()
   (vg-message "truncate-lines=%s" (setq truncate-lines nil)))
@@ -619,6 +649,11 @@
  (switch-to-buffer "*grep*")
  (command-execute 'grep))
 
+(defun vg-run-line () (interactive)
+ ;; TODO How to do that in another directory?
+ (setq compile-command (thing-at-point 'line))
+ (command-execute 'compile))
+
 (defun g1 () "Show last commit" (interactive)
  (Compact-blame-show-commit "HEAD"))
 (defalias 'gh 'g1)
@@ -645,6 +680,7 @@
  (command-execute 'visit-tags-table))
 (setq compile-command "systemd-inhibit --what=handle-lid-switch scl \
 enable gcc-toolset-12 'make -k'")
+(setq compile-history (list compile-command))
 
 (server-start)
 (setenv "EDITOR"

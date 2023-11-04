@@ -102,8 +102,9 @@ keyfuzz.options = --disable-lynx
 emacs.options=--with-tiff=no --with-xpm=no --with-gnutls=no\
 	--with-jpeg=no --with-gif=no
 new-emacs.options = $(emacs.options)
-evince.options=-Ddjvu=enabled -Dnautilus=false -Dintrospection=false\
-	-Dgtk_doc=false -Duser_doc=false -Dgspell=disabled
+_build%evince: options=-Ddjvu=enabled -Dnautilus=false\
+	-Dintrospection=false -Dgtk_doc=false -Duser_doc=false\
+	-Dgspell=disabled
 #
 # To build with OS paths baked in:
 # scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
@@ -325,13 +326,13 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
 		$($*.envvars) python3 $S/$*/meson/meson.py --prefix="$R"\
-		$($*.options) $S/$*
+		$($*.options) $(options) $S/$*
 
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
 		$($*.envvars) CFLAGS=-I$R/include python3.9 $S/meson/meson.py\
-		--prefix="$R" $($*.options) $S/$* 2>&1|\
+		--prefix="$R" $($*.options) $(options) $S/$* 2>&1|\
 		tee meson_.log
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
