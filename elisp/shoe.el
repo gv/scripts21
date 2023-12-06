@@ -82,7 +82,7 @@
 ;;     ``````` ````
 
 (defun vg-backward-delete-word ()
- "Delete word without changing clipboard"
+ "Delete word without changing clipboard. TODO The same forward"
  (interactive)
  (delete-region (point) (progn (forward-word -1) (point))))
 
@@ -96,10 +96,14 @@
  '(lambda () (interactive)
    (beginning-of-line)
    (kill-line)))
-(global-set-key [f2]    'save-buffer)
 (define-key global-map (kbd "C-a") 'mark-whole-buffer)
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
+;; TODO Breaks all Alt key combinations
+;; Trying to bind them throws:
+;; "Key sequence ESC ESC starts with non-prefix key ESC"
+;; (define-key global-map (kbd "ESC") 'keyboard-quit)
+(define-key global-map (kbd "ESC ESC") 'keyboard-quit)
 (global-set-key [M-f7]  'find-name-dired)
 (global-set-key [C-tab]  'other-window)
 (global-set-key (kbd "C-=") 'switch-to-buffer)
@@ -154,14 +158,13 @@
 (define-key global-map [M-prior] 'pop-tag-mark)
 ;; End of code navigation
 
-;; TODO Isn't that a conventional Mac key for other window?
-;; icfp could be s-f 
-(define-key global-map (kbd "s-`") 'vg-insert-current-file-path)
+(define-key global-map (kbd "s-f") 'vg-insert-current-file-path)
 (define-key global-map (kbd "C-\\")
  (lambda () (interactive)
   (vg-message "Keyboard language switch disabled")))
 (define-key global-map (kbd "s-g") 'google-at-point)
 (define-key global-map (kbd "s-b") 'google-line)
+(define-key global-map (kbd "s-o") 'vg-line-2-tor-browser) 
 ;; Use with Shift on XFCE
 (define-key global-map (kbd "s-r") 'revert-buffer)
 (define-key global-map (kbd "s-k") 'kill-current-buffer)
@@ -190,7 +193,13 @@
 ;;  (lambda () (interactive) (just-one-space -1)))
 (define-key global-map [s-delete]
  (lambda () (interactive) (cycle-spacing -1)))
+(define-key global-map (kbd "s-h") 'query-replace)
 (define-key global-map (kbd "M-RET") 'dired-find-file-other-window)
+
+(defun vg-case-insensitive-isearch () (interactive)
+ (let ((case-fold-search t))
+  (command-execute 'isearch-forward)))
+(define-key global-map (kbd "s-i") 'vg-case-insensitive-isearch)
 
 ;; Compile/grep
 (define-key global-map (kbd "s-q") 'compile)
@@ -200,6 +209,7 @@
 (define-key global-map [s-down] 'next-error)
 (define-key global-map (kbd "s-t") 'tracker-search)
 (define-key global-map (kbd "s-l") 'vg-run-line)
+(define-key global-map (kbd "C-l") 'vg-run-line)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -243,6 +253,19 @@
 	  (lambda () (interactive) (vg-update-font size (1+ i))))
    (vg-update-font size i)))
 
+(defun vg-diff-reset-file () (interactive)
+ "In diff mode: undo the changes to file at point"
+ ;; TODO
+ ;; Probably need to backup the file before `git checkout`
+ )
+
+(defun vg-line-2-tor-browser () (interactive)
+ ;; TODO: Doesn't work, shows "running but not responding" msg
+ (let ((url (thing-at-point 'line t)))
+  (Vg-start-process "setsid" "nohup"
+   (expand-file-name "~/alpha-tor-browser/Browser/firefox")
+   "--detach" url)))
+
 (defun vg-insert-current-file-path () (interactive)
  (insert
   (buffer-file-name (window-buffer (minibuffer-selected-window)))))
@@ -260,12 +283,15 @@
    (find-tag-other-window (find-tag-default))
    (vg-message "No names at point"))))
 
+(defun Vg-current-word-or-selection ()
+ (if (use-region-p)
+  (format "\"%s\"" (buffer-substring-no-properties
+					(region-beginning) (region-end)))
+  (find-tag-default)))
+
 (defun google-at-point () (interactive)
  (let
-  ((q (if (use-region-p)
-	   (format "\"%s\"" (buffer-substring-no-properties
-						 (region-beginning) (region-end)))
-	   (find-tag-default))))
+  ((q (Vg-current-word-or-selection)))
   (Vg-open-browser (format "https://www.google.com/search?q=%s" q))))
 
 (defun google-line () (interactive)
@@ -284,8 +310,11 @@
 (defun vg-open (x)
  (let ((cmd (append (if (equal window-system 'ns) '("open")
 					 '("setsid" "nohup" "xdg-open")) (list x))))
-  (vg-message "Running %s" cmd)
-  (apply 'start-process (format "%s" cmd) "*Messages*" cmd)))
+  (apply 'Vg-start-process cmd)))
+
+(defun Vg-start-process (&rest cmd)
+ (vg-message "Running %s" cmd)
+ (apply 'start-process (format "%s" cmd) "*Messages*" cmd))
 
 (defun open () (interactive)
  (vg-open (expand-file-name (or buffer-file-name default-directory))))
@@ -389,11 +418,29 @@
  (load "../compact-blame/compact-blame.el")
  (setq compact-blame-bg1 "rainbow")
  (setq compact-blame-bg2 "rainbow2")
- (setq compact-blame-format "%Y%x%.%#"))
+ (setq compact-blame-format "%Y%x%.%#")
+ (setq compact-blame-light-coeff 1050)
+ (setq compact-blame-name-limit 4))
 (load "markdown-mode/markdown-mode.el")
 (add-hook 'markdown-mode-hook 'word-wrap-whitespace-mode)
+(add-hook 'markdown-mode-hook 'Vg-tune-md)
 
-;; for ViewSourceWith Firefox extension
+(defun Vg-tune-md ()
+ (highlight-regexp ".xperience .*financial" 'hi-pink)
+ (highlight-regexp ".xperience .*mbedded" 'hi-pink)
+ (highlight-regexp ".xperience .*quant" 'hi-pink)
+ (highlight-regexp ".xperience .*trading" 'hi-pink)
+ (highlight-regexp ".xperience .*icrocontrollers" 'hi-pink)
+ (highlight-regexp ".xperience .*ndroid" 'hi-pink)
+ (highlight-regexp ".*mbedded.*xperience.*" 'hi-pink)
+ (highlight-regexp ".*ow.latency.*xperience.*" 'hi-pink)
+ (highlight-regexp ".itizen" 'hi-pink)
+ (highlight-regexp ".*visa.*" 'hi-pink)
+ (highlight-regexp "German\b" 'hi-pink) 
+ (highlight-regexp "working rights" 'hi-pink)
+ )
+
+;; For Viewsourcewith Firefox extension
 ;;(add-to-list 'auto-mode-alist '("index.\\.*" . wikipedia-mode))
 
 (defun vg-tune-c ()
@@ -414,7 +461,7 @@
   (vg-message
    "C mode hook: tab-width=%d c-basic-offset=%d" tab-width c-basic-offset))
 (add-hook 'c-mode-common-hook 'vg-tune-c)
-(add-hook 'js-mode-hook 'vg-tune-c)
+ (add-hook 'js-mode-hook 'vg-tune-c)
 
 (defun my-javascript-mode-hook ()
   (setq indent-tabs-mode t tab-width 4 js-indent-level 4)
@@ -443,8 +490,7 @@
 (add-hook 'emacs-lisp-mode-hook 'compact-blame-mode)
 
 (defun tune-dabbrev ()
-  (modify-syntax-entry ?/ ".")
-  (vg-message "Char syntax: /=%s" (string (char-syntax ?/)))
+ (Vg-classify-as-punctuation "/")
   ;;(set (make-local-variable 'dabbrev-abbrev-char-regexp) "[A-Za-z0-9_]")
   ;;(vg-message "dabbrev-abbrev-char-regexp set to '%s'" dabbrev-abbrev-char-regexp)
   )
@@ -454,6 +500,11 @@
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
  (tune-dabbrev)
+ (define-key org-mode-map (kbd "ESC <up>")
+  (define-key org-mode-map (kbd "ESC <down>")
+   (lambda () (interactive)
+	(vg-message "Move paragraph keys disabled"))))
+ ;; These don't get message to not shadow the global-map bindings
  (define-key org-mode-map [C-tab] nil)
  (define-key org-mode-map [M-up] nil)
  (define-key org-mode-map [M-down] nil)
@@ -463,7 +514,7 @@
   (concat "/scripts/tasks.py "
    (file-name-nondirectory (buffer-file-name))))
  (push compile-command compile-history))
-(add-hook 'org-mode-hook 'vg-tune-org-mode)
+ (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
 (defun Vg-classify-as-punctuation (chars)
  (let* ((before "")
@@ -486,15 +537,18 @@
  (Vg-classify-as-punctuation "-<>/")
  (define-key compilation-mode-map "o" 'vg-open-url)
  (define-key compilation-mode-map "f" 'vg-firefox-url)
- (highlight-regexp Vg-url-pattern))
+ (highlight-regexp Vg-url-pattern)
+ ;; Highlight debug print
+ (highlight-regexp "vg:.*$" 'hi-green))
 (add-hook 'compilation-start-hook 'Vg-tune-compilation)
 
 (defun tracker-search () (interactive)
  (let ((cmd (read-shell-command "Command: "
 			 (concat "tracker search --limit=999 --disable-color "
-			  (find-tag-default)))))
-  (compilation-start cmd)))
-
+			  (Vg-current-word-or-selection)))))
+  (compilation-start cmd 'compilation-mode
+   (lambda (&rest _) "*tracker-search*"))))
+ 
 (defun vg-open-url () (interactive)
  (let* ((line (thing-at-point 'line t))
 		(url
@@ -535,6 +589,8 @@
 (add-to-list 'auto-mode-alist '("\\.js\\'" . javascript-mode))
 (add-to-list 'auto-mode-alist '("\\.gyp\\'". javascript-mode))
 (add-to-list 'auto-mode-alist '("\\.d\\'" . awk-mode))
+(add-to-list 'auto-mode-alist '("Makefile" . makefile-mode))
+(add-to-list 'auto-mode-alist '("\\.md\\.txt\\'" . markdown-mode))
 (make-face-bold 'font-lock-keyword-face)
 (make-face-italic 'font-lock-string-face)
 (which-function-mode 1)
@@ -645,13 +701,27 @@
 									 
 (defun gg ()
  "Start grep in the directory where the last grep was done"
- (interactive) 
+ (interactive)
+ ;; Experimental: replace active user input prompt (if any) with ours
+ (when (minibuffer-prompt)
+  (run-at-time nil nil 'gg)
+  (throw 'exit t))
  (switch-to-buffer "*grep*")
  (command-execute 'grep))
 
+;; That doesn't cancel user inpuut request
+;; (signal 'quit nil)
+
+(defun Vg-get-current-line-escaped ()
+ (beginning-of-line)
+ (let ((cc (buffer-substring-no-properties (point) (buffer-size))))
+  (string-match ".*[^\\\\]$" cc)
+  (replace-regexp-in-string "\\\\?\n" ""
+   (substring cc 0 (match-end 0)))))
+
 (defun vg-run-line () (interactive)
- ;; TODO How to do that in another directory?
- (setq compile-command (thing-at-point 'line))
+ (setq compile-command (Vg-get-current-line-escaped))
+ (save-buffer)
  (command-execute 'compile))
 
 (defun g1 () "Show last commit" (interactive)
@@ -693,6 +763,8 @@ enable gcc-toolset-12 'make -k'")
 (setenv "PATH"
  "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
 (setenv "GCC_COLORS" "")
+(setq process-connection-type nil)  ;; No pty
+(setenv "SUDO_ASKPASS" "/usr/libexec/openssh/gnome-ssh-askpass")
 (setq-default case-fold-search nil case-replace nil
 			  dabbrev-case-fold-search nil)
 (setq revert-without-query '(".*"))
@@ -717,6 +789,7 @@ enable gcc-toolset-12 'make -k'")
 (grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
 (grep-apply-setting 'grep-use-null-device nil)
 (setq sh-basic-offset 2)
+(setq compilation-skip-threshold 2)
 (menu-bar-mode -1)
 (split-window-right)
 (vg-message
