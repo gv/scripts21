@@ -90,12 +90,19 @@
 (global-set-key [end] 'end-of-line)
 ; Workaround for windows remote terminals
 (global-set-key [select] 'end-of-line)
+(global-set-key [A-home] 'beginning-of-buffer)
+(global-set-key [A-end] 'end-of-buffer)
 (global-set-key [\C-home] 'beginning-of-buffer)
 (global-set-key [\C-end] 'end-of-buffer)
+(define-key global-map [s-home] 'beginning-of-buffer)
+(define-key global-map [s-end] 'end-of-buffer)
+(define-key global-map (kbd "s-[") 'backward-sexp)
+(define-key global-map (kbd "s-]") 'forward-sexp)
 (global-set-key [(control y)] 
  '(lambda () (interactive)
    (beginning-of-line)
    (kill-line)))
+(global-set-key (kbd "A-k") 'kill-line)
 (define-key global-map (kbd "C-a") 'mark-whole-buffer)
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
@@ -104,17 +111,13 @@
 ;; "Key sequence ESC ESC starts with non-prefix key ESC"
 ;; (define-key global-map (kbd "ESC") 'keyboard-quit)
 (define-key global-map (kbd "ESC ESC") 'keyboard-quit)
-(global-set-key [M-f7]  'find-name-dired)
-(global-set-key [C-tab]  'other-window)
-(global-set-key (kbd "C-=") 'switch-to-buffer)
-(global-set-key [A-end] 'end-of-buffer)
-(global-set-key [A-home] 'beginning-of-buffer)
-(global-set-key (kbd "A-k") 'kill-line)
 ;; Standard Mac 'other window' key
 (global-set-key (kbd "A-'") 'other-window)
+(global-set-key [M-tab] 'other-window)
+(global-set-key [C-tab]  'other-window)
+(global-set-key (kbd "C-=") 'switch-to-buffer)
 ;;(global-set-key [C-x] 'clipboard-kill-region)
 (global-set-key (kbd "C-v") 'cua-paste)
-(global-set-key [M-tab] 'other-window)
 
 ;; Completion
 ;; [s-\`] [s-/] do not work!
@@ -128,11 +131,6 @@
 (define-key global-map (kbd "C-0")
  (lambda () (interactive) (insert " ")))
 ;; End of `completion`
-
-(define-key global-map (kbd "s-[") 'backward-sexp)
-(define-key global-map (kbd "s-]") 'forward-sexp)
-(define-key global-map [s-home] 'beginning-of-buffer)
-(define-key global-map [s-end] 'end-of-buffer)
 
 ;; Code navigation
 (global-set-key [A-M-down] 'ft-at-point)
@@ -158,6 +156,7 @@
 (define-key global-map [M-prior] 'pop-tag-mark)
 ;; End of code navigation
 
+(define-key global-map [f1] 'man)
 (define-key global-map (kbd "s-f") 'vg-insert-current-file-path)
 (define-key global-map (kbd "C-\\")
  (lambda () (interactive)
@@ -196,6 +195,16 @@
 (define-key global-map (kbd "s-h") 'query-replace)
 (define-key global-map (kbd "M-RET") 'dired-find-file-other-window)
 
+(defun vg-trash-buffer-file () (interactive)
+ ;; TODO
+ (save-buffer)
+ (if (with-current-buffer "*Messages*"
+	  (let ((buffer-read-only nil))
+	   (call-process "gio" nil t nil "trash" "TODO: confirm")))
+  (vg-message "TODO")
+  (kill-buffer)))
+(define-key global-map [f8] 'vg-trash-buffer-file)
+
 (defun vg-case-insensitive-isearch () (interactive)
  (let ((case-fold-search t))
   (command-execute 'isearch-forward)))
@@ -203,6 +212,9 @@
 
 ;; Compile/grep
 (define-key global-map (kbd "s-q") 'compile)
+;; TODO `recompile` doesn't restore CWD of the last compile 
+(define-key global-map (kbd "S-SPC") 'recompile)
+(define-key global-map (kbd "s-y") 'recompile)
 (define-key global-map (kbd "s-s") 'gg)
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
@@ -210,6 +222,8 @@
 (define-key global-map (kbd "s-t") 'tracker-search)
 (define-key global-map (kbd "s-l") 'vg-run-line)
 (define-key global-map (kbd "C-l") 'vg-run-line)
+(global-set-key [M-f7]  'find-name-dired)
+(define-key global-map [f6] 'rename-buffer)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -253,11 +267,23 @@
 	  (lambda () (interactive) (vg-update-font size (1+ i))))
    (vg-update-font size i)))
 
-(defun vg-diff-reset-file () (interactive)
- "In diff mode: undo the changes to file at point"
- ;; TODO
- ;; Probably need to backup the file before `git checkout`
- )
+(defun vg-diff-stash-file () (interactive)
+ "In diff mode: reversibly undo the changes to file at point"
+ ;; TODO Can I show subprocess output as messages?
+ (let* ((buf (car (diff-find-source-location)))
+		(path (buffer-file-name buf)) (dir default-directory)
+		(cmd (list "stash" "push" "--" path)) (sp (point)) code)
+  (if (/= 0
+	   (setq code
+		(with-current-buffer "*Messages*"
+		 (let ((buffer-read-only nil) (default-directory dir))
+		  (apply 'call-process "git" nil t nil cmd)))))
+   (vg-message "git %s exited with code %d" cmd code)
+   (vg-message "git %s succesful" cmd)
+   (revert-buffer)
+   (goto-char sp))))
+(require 'diff-mode)
+(define-key diff-mode-map [delete] 'vg-diff-stash-file)
 
 (defun vg-line-2-tor-browser () (interactive)
  ;; TODO: Doesn't work, shows "running but not responding" msg
@@ -268,7 +294,8 @@
 
 (defun vg-insert-current-file-path () (interactive)
  (insert
-  (buffer-file-name (window-buffer (minibuffer-selected-window)))))
+  (or (buffer-file-name (window-buffer (minibuffer-selected-window)))
+   (buffer-name (window-buffer (minibuffer-selected-window))))))
 
 (defun ft-at-point () "AKA go to def" (interactive)
 	   (find-tag (find-tag-default)))
@@ -500,6 +527,7 @@
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
  (tune-dabbrev)
+ (Vg-classify-as-punctuation "+")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -514,7 +542,7 @@
   (concat "/scripts/tasks.py "
    (file-name-nondirectory (buffer-file-name))))
  (push compile-command compile-history))
- (add-hook 'org-mode-hook 'vg-tune-org-mode)
+(add-hook 'org-mode-hook 'vg-tune-org-mode)
 
 (defun Vg-classify-as-punctuation (chars)
  (let* ((before "")
@@ -526,7 +554,7 @@
 						 (char-syntax c)) chars))))
   (vg-message "Char classes '%s' = '%s' -> '%s'" chars before after)))
 
-(setq Vg-url-pattern "\\w+://[^\s\n]+")
+(setq Vg-url-pattern "\\w+://[^\s\n\"]+")
 (defun Vg-tune-compilation (proc)
  "this is for grep to stop without confirmation when
  next grep is started"
@@ -636,7 +664,9 @@
  (interactive
   (list (expand-file-name
 		 (if buffer-file-name
-		  (read-file-name "Move file to: ")
+		  (read-file-name "Move file to: " default-directory
+		   buffer-file-name nil
+		   (file-name-nondirectory buffer-file-name))
 		  (read-file-name "Move file to: "
 		   default-directory
 		   (expand-file-name (file-name-nondirectory (buffer-name))
@@ -790,7 +820,9 @@ enable gcc-toolset-12 'make -k'")
 (grep-apply-setting 'grep-use-null-device nil)
 (setq sh-basic-offset 2)
 (setq compilation-skip-threshold 2)
+(setq recentf-max-saved-items 1024)
 (menu-bar-mode -1)
 (split-window-right)
+(recentf-open-files)
 (vg-message
  "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
