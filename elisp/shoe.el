@@ -192,6 +192,8 @@
 ;;  (lambda () (interactive) (just-one-space -1)))
 (define-key global-map [s-delete]
  (lambda () (interactive) (cycle-spacing -1)))
+(define-key global-map [s-kp-delete]
+ (lambda () (interactive) (cycle-spacing -1)))
 (define-key global-map (kbd "s-h") 'query-replace)
 (define-key global-map (kbd "M-RET") 'dired-find-file-other-window)
 
@@ -284,6 +286,8 @@
    (goto-char sp))))
 (require 'diff-mode)
 (define-key diff-mode-map [delete] 'vg-diff-stash-file)
+;; Mac Fn+Backspace
+(define-key diff-mode-map [kp-delete] 'vg-diff-stash-file)
 
 (defun vg-line-2-tor-browser () (interactive)
  ;; TODO: Doesn't work, shows "running but not responding" msg
@@ -640,24 +644,24 @@
   (set-background-color "white")
   (set-foreground-color "black"))
 
-(defun git-log (options)
-  "Print log with options"
+(defun git-log (options) "Print log with options"
  (interactive "sGit log options: ")
- (require 'vc)
-  (let ((bn "*git-log*"))
-	(set-buffer (get-buffer-create bn))
-	(vc-setup-buffer bn)
-	;;(let ((inhibit-read-only t))
-	;; (with-current-buffer bn
-	(apply 'vc-git-command bn 'async nil "log" (split-string options))
-	;;	))
+ (let* ((bn "*git-log*") proc
+	   (cmd (append '("git" "log") (split-string options))))
+  (require 'vc-git)
+  (set-buffer (get-buffer-create bn))
+  (setq-local revert-buffer-function
+   (lambda (&rest ignored)
+	(setq buffer-read-only nil)
+	(erase-buffer)
 	(setq vc-log-view-type 'long log-view-vc-backend 'git)
-	(vc-git-log-view-mode)
-	(setq buffer-read-only t)
-	;; [ ] add message to buffer when process is done; use "compile"
-	;;     or vc-run-delayed
-   (pop-to-buffer bn)))
-
+	(insert (format "--- Running %s...\n" cmd))
+	(setq proc (apply 'start-process bn (current-buffer) cmd))
+	(vc-git-log-view-mode) ;; <- This sets buffer-read-only
+	(goto-char 1)
+	(pop-to-buffer bn)))
+  (funcall revert-buffer-function)))
+ 
 ;; This one is originally from https://zck.org/emacs-move-file
 (defun move-file (new-location)
  "Write this file to NEW-LOCATION, and delete the old one."
