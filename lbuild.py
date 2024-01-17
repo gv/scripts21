@@ -296,7 +296,7 @@ class Build:
 						"-u", str(os.getuid()),
 						"-w", build,
 						"-e", f"HOME={build}",
-						"-it", dockerImage,
+						"-t", dockerImage,
 						"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)
 			
