@@ -5,6 +5,7 @@
 (defun vg-message (fmt &rest args)
  (apply 'message (propertize fmt 'face '(:background "#A0FFA0")) args))
 (setq force-load-messages t)
+(require 'subr-x)
 
 ;;
 ;;     BEHAVIOR
@@ -215,7 +216,6 @@
 ;; Compile/grep
 (define-key global-map (kbd "s-q") 'compile)
 ;; TODO `recompile` doesn't restore CWD of the last compile 
-(define-key global-map (kbd "S-SPC") 'recompile)
 (define-key global-map (kbd "s-y") 'recompile)
 (define-key global-map (kbd "s-s") 'gg)
 (global-set-key (kbd "ESC <up>") 'previous-error)
@@ -269,25 +269,64 @@
 	  (lambda () (interactive) (vg-update-font size (1+ i))))
    (vg-update-font size i)))
 
+(defmacro Vg-with-cmd-output (cmd_ &rest body)
+ `(let (output status (cmd ,cmd_))
+   (with-temp-buffer
+	(vg-message "Running %s..." cmd)
+	(setq status 
+	 (apply 'call-process (car cmd) nil (current-buffer)
+	  nil (cdr cmd)))
+	(setq output
+	 (string-trim
+	  (buffer-substring-no-properties (point-min) (point-max)))))
+   (if (/= 0 status)
+	(vg-message "Output: %s\n%s exited with status %s"
+	 output cmd status)
+	,@body)))
+
 (defun vg-diff-stash-file () (interactive)
  "In diff mode: reversibly undo the changes to file at point"
- ;; TODO Can I show subprocess output as messages?
  (let* ((buf (car (diff-find-source-location)))
 		(path (buffer-file-name buf)) (dir default-directory)
-		(cmd (list "stash" "push" "--" path)) (sp (point)) code)
-  (if (/= 0
-	   (setq code
-		(with-current-buffer "*Messages*"
-		 (let ((buffer-read-only nil) (default-directory dir))
-		  (apply 'call-process "git" nil t nil cmd)))))
-   (vg-message "git %s exited with code %d" cmd code)
-   (vg-message "git %s succesful" cmd)
-   (revert-buffer)
-   (goto-char sp))))
+		(sp (point)))
+  (Vg-with-cmd-output
+   (list "git" "stash" "push" "-m"
+	(format "File '%s' saved by vg-diff-stash-file" path) "--" path)
+   (vg-message "%s exited with status %s" cmd status))
+  (revert-buffer)
+  ;; TODO Restore pos doesn't work 
+  (vg-message "Pos=%s" sp)
+  (goto-char sp)))
+
 (require 'diff-mode)
 (define-key diff-mode-map [delete] 'vg-diff-stash-file)
 ;; Mac Fn+Backspace
 (define-key diff-mode-map [kp-delete] 'vg-diff-stash-file)
+
+(defun vg-write+merge (dest) (interactive "fPath to write + merge:")
+ ;; TODO: rewrite using a temp file instead of `git stash`
+ (let ((sp (point)))
+  (when (file-directory-p dest)
+   (setq dest
+	(expand-file-name (file-name-nondirectory buffer-file-name)
+	 dest)))
+  (if (not (file-exists-p new-location))
+   (write-file dest)
+   (let ((default-directory (file-name-nondirectory)))
+	(Vg-with-cmd-output
+	 (list "git" "stash" "push" "-m"
+	  (format "Saving file '%s' for vg-write+merge" dest)
+	  "--" dest)
+	 (write-file dest)
+	 (unless (string= output "No local changes to save")
+	  (if
+	   (string-match
+		"and index state WIP on [^:]+: \\([0-9a-zA-Z]+\\)" output)
+	   (Vg-with-cmd-output
+		(list "git" "stash" "apply" (match-string 1 output)))
+	   (vg-message "Unknown output from %s: %s" cmd output))
+	  (revert-buffer)
+	  (goto-char sp)))))))
 
 (defun vg-line-2-tor-browser () (interactive)
  ;; TODO: Doesn't work, shows "running but not responding" msg
@@ -766,8 +805,8 @@
  (Compact-blame-show-commit "0000000000000000000000000000000000000000"))
 (defalias 'gj 'g0)
 
-(defun lm (path) "Load man page from path" (interactive "f")
- (vg-message "Path='%s'" path)
+(defun lm (path) "Load man page from file"
+ (interactive "fPath to man page: ")
  (man (format "-l %s" path)))
 
 (setq tramp-mode nil)
@@ -782,9 +821,11 @@
  (require 'etags)
  (tags-reset-tags-tables)
  (command-execute 'visit-tags-table))
+
 (setq compile-command "systemd-inhibit --what=handle-lid-switch scl \
 enable gcc-toolset-12 'make -k'")
 (setq compile-history (list compile-command))
+(savehist-mode)
 
 (server-start)
 (setenv "EDITOR"
