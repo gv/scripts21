@@ -105,6 +105,7 @@
    (kill-line)))
 (global-set-key (kbd "A-k") 'kill-line)
 (define-key global-map (kbd "C-a") 'mark-whole-buffer)
+(define-key global-map (kbd "s-a") 'mark-whole-buffer)
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
 ;; TODO Breaks all Alt key combinations
@@ -221,7 +222,8 @@
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
 (define-key global-map [s-down] 'next-error)
-(define-key global-map (kbd "s-t") 'tracker-search)
+;; Mimic Cmd-F on Mac Finder
+(define-key global-map (kbd "M-f") 'tracker-search)
 (define-key global-map (kbd "s-l") 'vg-run-line)
 (define-key global-map (kbd "C-l") 'vg-run-line)
 (global-set-key [M-f7]  'find-name-dired)
@@ -302,6 +304,10 @@
 (define-key diff-mode-map [delete] 'vg-diff-stash-file)
 ;; Mac Fn+Backspace
 (define-key diff-mode-map [kp-delete] 'vg-diff-stash-file)
+(define-key diff-mode-map "c"
+ (lambda () (interactive)
+  (setq-local compile-command "git commit")
+  (command-execute 'compile)))
 
 (defun vg-write+merge (dest) (interactive "fPath to write + merge:")
  ;; TODO: rewrite using a temp file instead of `git stash`
@@ -570,7 +576,7 @@
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
  (tune-dabbrev)
- (Vg-classify-as-punctuation "+")
+ (Vg-classify-as-punctuation "+$")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -822,8 +828,8 @@
  (tags-reset-tags-tables)
  (command-execute 'visit-tags-table))
 
-(setq compile-command "systemd-inhibit --what=handle-lid-switch scl \
-enable gcc-toolset-12 'make -k'")
+(setq compile-command "systemd-inhibit --what=handle-lid-switch\
+ ionice -c3 scl enable gcc-toolset-12 'make -k'")
 (setq compile-history (list compile-command))
 (savehist-mode)
 

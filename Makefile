@@ -61,11 +61,15 @@ lldb.options =\
 	-DLLDB_INCLUDE_TESTS=0\
 	-D CMAKE_EXE_LINKER_FLAGS=-g\
 	-D CMAKE_CXX_FLAGS=-g
+# CMAKE_INSTALL_MODE requires cmake 3.22
 llvm.options =\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
-	-DLLVM_INCLUDE_TESTS=0
-clang.options =\
-	-DCMAKE_BUILD_TYPE=RELWITHDEBINFO\
+	-D CMAKE_CXX_FLAGS_RELWITHDEBINFO='-Os -g -DNDEBUG'\
+	-D LLVM_INCLUDE_TESTS=0\
+	-D LLVM_TARGETS_TO_BUILD=X86
+# Doesn't work in cmake 3.20
+#	-DCMAKE_AR="ls nonsence"
+clang.options = $(llvm.options)\
 	-DCLANG_INCLUDE_TESTS=0
 rtags.options = -D\
 	LIBCLANG_LLVM_CONFIG_EXECUTABLE="$(Clang_DIR)/bin/llvm-config"\
@@ -130,7 +134,7 @@ T = samba/source3
 samba/source3.options = CFLAGS="-O -Wno-deprecated-declaration"
 
 $R/samba.make.successful.log.txt: $T/Makefile $(MAKEFILE_LIST) $f
-	(cd $T && $(MAKE)) 2>&1 |tee $@.tmp.txt
+	(cd $T && $(MAKE)) 2>&1 |tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
 4samba.n: zlib.m pkg-config.m
@@ -210,7 +214,7 @@ $R/%.wafhb.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 		$S/%/bin/c4che/default_cache.py $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
 	(cd $S/$* && $(env) caffeinate nice $< build -kvt $(topconfdir)) 2>&1 |\
-		tee $@.tmp.txt
+		tee -a $@.tmp.txt
 	mv $@.tmp.txt $@
 	$(AFSCTOOL) -cfvvv $S/$*
 
@@ -240,7 +244,7 @@ $(AFSCTOOL.Darwin): $(AFSCTOOL.Darwin).c
 
 .PRECIOUS: $O/$B.%/Makefile $O/$B.%/build.ninja\
 	%/configure %/Makefile.in\
-	$R/%.install.successful.log.txt $R/%.make.successful.log.txt\
+	$R/%.installed.logc $R/%.make.successful.log.txt\
 	$O/$B.%/%.ninja.success.logc $R/%.waf.successful.log.txt\
 	$(AFSCTOOL)
 
@@ -265,7 +269,7 @@ _build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
 %.m:
 	$(MAKE) $*.install_
 
-%.install_: $R/%.install.successful.log.txt $(AFSCTOOL)
+%.install_: $R/%.installed.logc $(AFSCTOOL)
 	$(AFSCTOOL) -cfvvv $R
 	@echo $^ is up to date	
 
@@ -275,20 +279,21 @@ _build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
 	$(AFSCTOOL) -cfvvv $O/$B.$*
 
 
-$R/%.install.successful.log.txt: $S/%/*.gyp $(MAKEFILE_LIST)
+$R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST)
 	(cd $* && GREP_OPTIONS= $($*.envvars)\
 		gyp --depth=. --format=ninja-linux &&\
-		ninja -vC out/Release $($*.targets)) 2>&1 |tee $@.tmp.txt
+		ninja -vC out/Release $($*.targets)) 2>&1 |tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
-$R/%.install.successful.log.txt: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
+$R/%.installed.logc: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && ninja install) 2>&1 | tee $@.tmp.txt
+	(cd $O/$B.$* && CMAKE_INSTALL_MODE=SYMLINK ninja install) 2>&1 |\
+		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
-$R/%.install.successful.log.txt: $R/%.make.successful.log.txt $(MAKEFILE_LIST)
+$R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)g
-	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 install) 2>&1 | tee $@.tmp.txt
+	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 install) 2>&1 | tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
 $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
@@ -302,15 +307,15 @@ CAFF = $(shell which caffeinate)
 $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 	$(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && time $(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
-		tee $@.tmp.txt
+	(cd $O/$B.$* && time $(CAFF) nice ninja -d explain -vj1) 2>&1 |\
+		tee -a $@.tmp.txt
 	$(AFSCTOOL) -cfvvv $O/$B.$*
 	mv -v $@.tmp.txt $@
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides)) 2>&1 |\
-		tee $@.tmp.txt
+		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
 $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)

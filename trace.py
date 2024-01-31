@@ -28,6 +28,11 @@ When OpenBlock/CloseBlock are called, count and print current block depth.
 Limit stack printout to 2 frames, duplicate output to /win/kodeks/rtf2.logc, 
 print paths relative to /win/kodeks.
 
+trace.py --launch "/kabata/a2-docker/kdb --no-reg /home/vg/email.ks"\
+ u_strToPunycode_66'#u16($$rdi, $$rsi)'
+
+... TODO
+
 Advantages over bcc:
  Can unwind DWARF stack
  Synchronous, can't loose samples, doesn't need buffer size tuning
@@ -223,19 +228,21 @@ class TracePoint(Util):
 	def getAddrs(self, target, process):
 		if self.addr:
 			return [self.addr]
-		if self.nameIsFull:
-			if "*" in self.symbolName:
-				addrs = []
-				for m in target.modules:
-					for s in m:
-						if not s.name:
-							continue
-						if fnmatch.fnmatch(s.name, self.symbolName):
-							addrs.append(s.addr.GetLoadAddress(target))
-				return addrs
+		if not self.nameIsFull:
+			# `None` means set BP by name 
+			return [None]
+		if not "*" in self.symbolName:
 			return [self.getAddrOf(self.symbolName, target)]
-		# `None` means set BP by name 
-		return [None]
+		# Can't use `yield` here, lldb will break
+		addrs = []
+		for m in target.modules:
+			for s in m:
+				if not s.name:
+					continue
+				if fnmatch.fnmatch(s.name.split("(")[0],
+								   self.symbolName):
+					addrs.append(s.addr.GetLoadAddress(target))
+		return addrs
 
 	def filterAccepts(self, frame, toolProc):
 		return True
@@ -364,10 +371,11 @@ class NamedTracePoint(TracePoint):
 			f2 = fc2 * length
 			return struct.unpack(f2, getMemory(ptr, struct.calcsize(f2)))
 		def icu(ptr):
-			buf = getMemory(ptr, 32)
-			flags, length, start = struct.unpack("HxxxxxxixxxxP", buf[8:])
+			buf = getMemory(ptr, 48)
+			flags, length, start = struct.unpack(
+				"HxxxxxxixxxxP", buf[8:32])
 			if flags & 2:
-				return bytes(buf[10:(10+(flags>>4))]).decode("utf-16")
+				return "SHORT " + bytes(buf[10:(10+(flags>>4)*2)]).decode("utf-16")
 			bb = bytes(getMemory(start, (length - 1) * 2))
 			try:
 				return bb.decode("utf-16")
@@ -388,13 +396,15 @@ class NamedTracePoint(TracePoint):
 			return "%d characters written" % len(str)
 		def level(tag):
 			return GlobalContext.levels.get(tag, 0)
+		def u16(start, length):
+			return getMemory(start, length *2).decode("utf-16")
 		r = eval(cmd, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
 			m=getMemory, o=output,
 			g=GlobalContext,
 			x=xd,
 			vi=vi, vi0c=vi0c, v=v,
-			icu=icu,
+			icu=icu, u16=u16,
 			levelIn=levelIn, levelOut=levelOut, level=level))
 		return r
 
@@ -426,7 +436,7 @@ class NamedTracePoint(TracePoint):
 					self.id, self.count, rightLimited(c2, 40)))
 				if toolProc.options.python or re.match(".*([(]|[+]=)", c2):
 					r = self.runScript(frame, c2)
-					toolProc.print("%s" % r)
+					toolProc.print(repr(r))
 				else:
 					toolProc.debugger.HandleCommand(c2)
 					toolProc.writeToLog("TODO Copy command output here\n")
@@ -740,7 +750,8 @@ class Process(Util):
 		if not f.line_entry.IsValid() or not f.line_entry.file.fullpath:
 			return ""
 		cwd = (
-			self.options.output and os.path.dirname(self.options.output) or
+			self.options.output and
+			os.path.dirname(self.options.output) or
 			os.getcwd()).split(os.sep)[-1]
 		parts = f.line_entry.file.fullpath.split(os.sep)
 		try:
