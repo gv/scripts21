@@ -7,6 +7,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
 	"--gprof", action="store_true", help="Compile with -pg")
 parser.add_argument(
+	"--asan", action="store_true", help="Compile with ASAN")
+parser.add_argument(
 	"--command", "-c", action="store_true", help="Run command")
 parser.add_argument(
 	"--docker", "-d", action="store_true",
@@ -34,9 +36,11 @@ class Paths:
 			dir = os.path.join(prefix, name.split(".")[0])
 		else:
 			dir = build.getConf("dir", ".")
-		self.build = os.path.join(self.base, dir)
 		if args.gprof:
-			self.build += ".gprof"
+			dir += ".gprof"
+		if args.asan:
+			dir += ".asan"
+		self.build = os.path.join(self.base, dir)
 		self.log = os.path.join(self.base, self.logName)
 		
 	def artefact(self, aname):
@@ -108,6 +112,7 @@ class Input:
 			log.flush()
 		if self.verbose:
 			self.verbose.write("%s %s" % (self.describeTime(), line))
+			self.verbose.flush()
 		if line.find(" -o ") < 0:
 			return
 		command = Command(line)
@@ -268,6 +273,11 @@ class Build:
 			return ["make", "CXXLD=g++ -Wl,-Map,$@.map"]
 		here = os.path.dirname(os.path.realpath(__file__))
 		arg = arg.replace("$here", here)
+		if self.args.asan:
+			if "-DCMAKE_BUILD_TYPE=RelWithDebInfo" == arg:
+				return [
+					arg,
+					"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-fsanitize=address"]
 		return [arg]
 
 	def logBuildCommands(self, log):
@@ -296,6 +306,8 @@ class Build:
 						"-u", str(os.getuid()),
 						"-w", build,
 						"-e", f"HOME={build}",
+						"-e",
+						"ASAN_OPTIONS=new_delete_type_mismatch=0,detect_leaks=0,help=1",
 						"-t", dockerImage,
 						"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)

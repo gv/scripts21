@@ -14,6 +14,57 @@ except ImportError:
 Resources/Python")
 import lldb
 
+take_off = datetime.datetime.now()
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument(
+	"--input", "-i", action='append', help="Input executable file")
+parser.add_argument(
+	"--output", "-o", help="Output file")
+parser.add_argument(
+	"--thorough", action='store_true',
+	help="Disregard line entry sizes, resolve every single byte!")
+parser.add_argument(
+	"--verbose", "-v", action='store_true', help='Verbose')
+parser.add_argument(
+	"--file", "-f", action='store_true',
+	help="""\
+Line mode: print annotated contents of every file 
+(unnamed args must be file paths""")
+parser.add_argument(
+	"--instructions", "-g", action="store_true",
+	help="Print disassembled instructions under each line (implies -f)")
+parser.add_argument(
+	"--unknown", action="store_true",
+	help="Try to resolve symbols for unresolvable locations")
+parser.add_argument(
+	"--map", "-m", action="append", help="Parse link map")
+parser.add_argument(
+	"--bydest", action="store_true", help="By destination section")
+parser.add_argument(
+	"--idebug", action="store_true", help="Include debug sections")
+parser.add_argument(
+	"--expand", "-x", action="append",
+	help="Hanlde object/lib names containing substring as separate sources")
+parser.add_argument(
+	"--git", help="Get file list + contents form REVISION (-f)")
+parser.add_argument(
+	"--calls", action="store_true", help="Get function calls (non virtual)")
+parser.add_argument(
+	"--symbols", action="store_true", help="Get symbol sizes and repeat counts")
+parser.add_argument(
+	"--all", action="store_true", help="Print symbol data")
+parser.add_argument(
+	"--types", action="store_true", help="List types & exit")
+parser.add_argument(
+	"--containing", "-I", action="store_true",
+	help="List all types whose names contain PREFIX")
+parser.add_argument(
+	"--recurse", "-r", action="store_true", help="List fields in pointer types")
+parser.add_argument(
+	"PREFIX", nargs="*",
+	help="Dir or file paths to count the code size for each")
+args = parser.parse_args()
+
 # print("pid %d" % os.getpid())
 # sys.stdin.read(1)
 
@@ -127,7 +178,7 @@ class Input:
 
 	def run(self, up):
 		if self.args.types:
-			return self.printTypes()
+			return self.printTypes(self.args.PREFIX)
 		# GetStartAddress()/GetEndAddress() can be .o section addresses
 		# before link, so only their difference is useful
 		text = self.getCodeSection()
@@ -174,11 +225,62 @@ class Input:
 				up.processEntry(e, size, self, None)
 				up.progress(size)
 
-	def printTypes(self):
+	def printFields(self, prefix, type, printed):
+		printed.add(type.name)
+		allFields = [
+			type.GetDirectBaseClassAtIndex(i)
+			for i in range(type.num_bases)] + [
+			type.GetFieldAtIndex(i)
+			for i in range(type.num_fields)]
+		for fl in allFields:
+			name = fl.name
+			ft = fl.GetType().GetCanonicalType()
+			if ft.name and name and name != ft.name:
+				name += " " + ft.name
+			print("%s%s %s" % (
+				prefix, "%d-%d" % (
+					fl.GetOffsetInBytes(),
+					fl.GetOffsetInBytes() + ft.size), name))
+			self.printFields(prefix + " ", ft, printed)
+			if self.args.recurse and ft.IsPointerType():
+				if ft.GetPointeeType().name in printed:
+					continue
+				self.printFields(prefix + " ", ft.GetPointeeType(), printed)
+				
+
+	def printTypes(self, strings):
+		printed = set()
+		if not self.args.containing:
+			for name in strings:
+				for t in self.module.FindTypes(name):
+					self.printOneType(t)
+			return
 		for i in range(self.module.GetNumCompileUnits()):
 			u = self.module.GetCompileUnitAtIndex(i)
+			sys.stdout.write("\rCU %d/%d..." % (
+				i, self.module.GetNumCompileUnits()))
+			sys.stdout.flush()
 			for t in u.GetTypes():
-				print("size=%4d name=%s" % (t.size, t.name))
+				if t.IsPointerType() or t.IsReferenceType() or t.size == 0:
+					continue
+				# Go from typedef name to real name
+				t = t.GetCanonicalType() 
+				found = False
+				for st in strings:
+					found = st in t.name
+					if found:
+						break
+				if not found:
+					continue
+				k = "%d:%s" % (t.size, t.name)
+				if k in printed:
+					continue
+				printed.add(k)
+				self.printOneType(t)
+
+	def printOneType(self, t):
+		print("\rsize=%d name=%s" % (t.size, t.name))
+		self.printFields(" ", t, set())
 
 	def descAddr(self, addr):
 		return "%s:%016X" % (addr.GetSection().GetName(), addr.GetOffset())
@@ -738,52 +840,6 @@ class Maps(Context):
 			list(sorted(self.sources.values())) + [
 				self.accounted])
 					
-		
-take_off = datetime.datetime.now()
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument(
-	"--input", "-i", action='append', help="Input executable file")
-parser.add_argument(
-	"--output", "-o", help="Output file")
-parser.add_argument(
-	"--thorough", action='store_true',
-	help="Disregard line entry sizes, resolve every single byte!")
-parser.add_argument(
-	"--verbose", "-v", action='store_true', help='Verbose')
-parser.add_argument(
-	"--file", "-f", action='store_true',
-	help="""\
-Line mode: print annotated contents of every file 
-(unnamed args must be file paths""")
-parser.add_argument(
-	"--instructions", "-g", action="store_true",
-	help="Print disassembled instructions under each line (implies -f)")
-parser.add_argument(
-	"--unknown", action="store_true",
-	help="Try to resolve symbols for unresolvable locations")
-parser.add_argument(
-	"--types", action="store_true", help="List types & exit")
-parser.add_argument(
-	"--map", "-m", action="append", help="Parse link map")
-parser.add_argument(
-	"--bydest", action="store_true", help="By destination section")
-parser.add_argument(
-	"--idebug", action="store_true", help="Include debug sections")
-parser.add_argument(
-	"--expand", "-x", action="append",
-	help="Hanlde object/lib names containing substring as separate sources")
-parser.add_argument(
-	"--git", help="Get file list + contents form REVISION (-f)")
-parser.add_argument(
-	"--calls", action="store_true", help="Get function calls (non virtual)")
-parser.add_argument(
-	"--symbols", action="store_true", help="Get symbol sizes and repeat counts")
-parser.add_argument(
-	"--all", action="store_true", help="Print symbol data")
-parser.add_argument(
-	"PREFIX", nargs="*",
-	help="Dir or file paths to count the code size for each")
-args = parser.parse_args()
 if args.instructions or args.git:
 	args.file = True
 ((args.all or args.calls) and Calls or\

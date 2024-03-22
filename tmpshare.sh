@@ -82,6 +82,7 @@ set -m
 $become $smbd -p $port --foreground --no-process-group $f\
 		--configfile="$conf" "$@" &
 if [ -n "$ssh" ]; then
+  # TODO: uid=$(whoami) should be evaluated on the remote machine
   ssh -R $port:localhost:$port "$target" -t\
 	  "set -x; mkdir -p $name &&"\
 	  "sudo mount.cifs //localhost/$name $name -o"\
