@@ -178,6 +178,9 @@
 ;; Norton Commander had Ctrl-U, but it's used for another thing,
 ;; and Flag-U does something else on Mac, so it's Alt-U for now
 (define-key global-map (kbd "M-u") 'window-swap-states)
+;; Add Flag-U too on Linux
+(if (equal window-system 'x)
+ (define-key global-map (kbd "s-u") 'window-swap-states))
 ;; TODO mimic vscode
 (define-key global-map (kbd "s-1") 'other-window)
 (define-key global-map (kbd "s-2") 'other-window)
@@ -186,6 +189,9 @@
  (lambda () (interactive) (find-file "~/20note.org")))
 (define-key global-map (kbd "s-4")
  (lambda () (interactive) (switch-to-buffer "*compilation*")))
+(define-key global-map (kbd "s-5")
+ (lambda () (interactive) (find-file "~")))
+
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
 (global-set-key [M-up] 'move-text-up)
@@ -196,11 +202,13 @@
  (lambda () (interactive) (cycle-spacing -1)))
 (define-key global-map [s-kp-delete]
  (lambda () (interactive) (cycle-spacing -1)))
-(define-key global-map (kbd "s-h") 'query-replace)
+;; A key from ncedit.exe
+(define-key global-map [f4] 'query-replace)
 (define-key global-map (kbd "M-RET") 'dired-find-file-other-window)
+(define-key global-map (kbd "M-q") 'vg-fill-lines-to-end)
 
 (defun vg-trash-buffer-file () (interactive)
- ;; TODO
+ ;; TODO Make it work 
  (save-buffer)
  (if (with-current-buffer "*Messages*"
 	  (let ((buffer-read-only nil))
@@ -301,6 +309,8 @@
   (goto-char sp)))
 
 (require 'diff-mode)
+;; (add-hook 'diff-mode-hook 'Vg-tune-diff)
+;; (defun Vg-tune-diff ()
 (define-key diff-mode-map [delete] 'vg-diff-stash-file)
 ;; Mac Fn+Backspace
 (define-key diff-mode-map [kp-delete] 'vg-diff-stash-file)
@@ -308,6 +318,7 @@
  (lambda () (interactive)
   (setq-local compile-command "git commit")
   (command-execute 'compile)))
+ 
 
 (defun vg-write+merge (dest) (interactive "fPath to write + merge:")
  ;; TODO: rewrite using a temp file instead of `git stash`
@@ -344,7 +355,8 @@
 (defun vg-insert-current-file-path () (interactive)
  (insert
   (or (buffer-file-name (window-buffer (minibuffer-selected-window)))
-   (buffer-name (window-buffer (minibuffer-selected-window))))))
+   (with-current-buffer (window-buffer (minibuffer-selected-window))
+	default-directory))))
 
 (defun ft-at-point () "AKA go to def" (interactive)
 	   (find-tag (find-tag-default)))
@@ -593,6 +605,14 @@
  (push compile-command compile-history))
 (add-hook 'org-mode-hook 'vg-tune-org-mode)
 
+(defun vg-fill-lines-to-end ()
+ (interactive)
+ (save-excursion
+  (while (not (eobp))
+   (end-of-line)
+   (do-auto-fill)
+   (forward-line 1))))
+
 (defun Vg-classify-as-punctuation (chars)
  (let* ((before "")
 		(after (concat (mapcar
@@ -603,7 +623,7 @@
 						 (char-syntax c)) chars))))
   (vg-message "Char classes '%s' = '%s' -> '%s'" chars before after)))
 
-(setq Vg-url-pattern "\\w+://[^\s\n\"]+")
+(setq Vg-url-pattern "\\w+://\\([^\s\n\"]+\\)")
 (defun Vg-tune-compilation (proc)
  "this is for grep to stop without confirmation when
  next grep is started"
@@ -612,8 +632,10 @@
   (not (string-match "/tasks.py" (format "%s" (process-command proc)))))
  ;; get characters out of "symbol" class
  (Vg-classify-as-punctuation "-<>/")
- (define-key compilation-mode-map "o" 'vg-open-url)
+ (define-key compilation-mode-map "o" 'vg-open-url-desktop)
+ (define-key compilation-mode-map "l" 'vg-load-url-editor)
  (define-key compilation-mode-map "f" 'vg-firefox-url)
+ (define-key compilation-mode-map "e" 'vg-open-url-evince)
  (highlight-regexp Vg-url-pattern)
  ;; Highlight debug print
  (highlight-regexp "vg:.*$" 'hi-green))
@@ -626,14 +648,28 @@
   (compilation-start cmd 'compilation-mode
    (lambda (&rest _) "*tracker-search*"))))
  
-(defun vg-open-url () (interactive)
- (let* ((line (thing-at-point 'line t))
-		(url
-		 (if (string-match Vg-url-pattern line)
-		  (match-string 0 line))))
-  (if url
-   (vg-open url)
-   (message "No url on current line"))))
+(defmacro Vg-open-url (&rest body)
+ `(let* ((line (thing-at-point 'line t))
+		 (url
+		  (if (string-match Vg-url-pattern line)
+		   (match-string 0 line))))
+   (if url
+	(progn ,@body)
+	(message "No url on current line"))))
+
+(defun vg-open-url-desktop () (interactive)
+ (Vg-open-url (vg-open url)))
+
+(defun vg-load-url-editor () (interactive)
+ (Vg-open-url (find-file (url-unhex-string (match-string 1 line)))))
+
+(defun vg-open-url-evince () (interactive)
+ (Vg-open-url
+  (forward-line)
+  (let* ((path (url-unhex-string (match-string 1 line)))
+		 (snip (string-trim (thing-at-point 'line t)))
+		 (word (nth 3 (string-split snip))))
+   (Vg-start-process "evince" path "--find" word))))
 
 (defun vg-tune-log-view ()
   (vg-message "truncate-lines=%s" (setq truncate-lines nil)))
@@ -805,11 +841,10 @@
 
 (defun g1 () "Show last commit" (interactive)
  (Compact-blame-show-commit "HEAD"))
-(defalias 'gh 'g1)
 
 (defun g0 () "Show not committed changes" (interactive)
+ (save-some-buffers)
  (Compact-blame-show-commit "0000000000000000000000000000000000000000"))
-(defalias 'gj 'g0)
 
 (defun lm (path) "Load man page from file"
  (interactive "fPath to man page: ")
