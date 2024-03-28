@@ -9,6 +9,8 @@ SHELL=/bin/bash -o pipefail
 MAKEFLAGS = -Rr
 b0 = $(shell uname -s)
 B = $(b0:Darwin=build)
+tools0 = $(b0:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
+tools = $(tools0:Linux=)
 
 # ---------- project specific options ----------
 
@@ -44,6 +46,7 @@ qemu6.envvars.Darwin = $(qemu.envvars.Darwin)
 qemu.options = --target-list=x86_64-softmmu --disable-docs\
 	--disable-guest-agent --disable-curl\
 	--disable-live-block-migration
+# --enable-virtfs works only on Linux
 qemu.options.Linux = --enable-gtk
 qemu6.options = $(qemu.options)
 pkg-config.options = --with-internal-glib
@@ -122,6 +125,8 @@ new-emacs.n: new-fake-manuals
 	echo "Fake" > $*emacs/info/emacs.info
 
 noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
+
+glib.m: pcre-8.45.m
 
 lldb.n: swig.m clang.m
 
@@ -275,7 +280,7 @@ _build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
 
 # Build specifically with configure/make
 %.make: $(AFSCTOOL) $(MAKEFILE_LIST) $O/$B.%/Makefile
-	$(MAKE) $R/$*.make.successful.log.txt 
+	PATH=$(tools)$(PATH) $(MAKE) $R/$*.make.successful.log.txt 
 	$(AFSCTOOL) -cfvvv $O/$B.$*
 
 
@@ -287,8 +292,8 @@ $R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST)
 
 $R/%.installed.logc: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && CMAKE_INSTALL_MODE=SYMLINK ninja install) 2>&1 |\
-		tee -a $@.tmp.txt
+	(cd $O/$B.$* && PATH=$(tools)$(PATH) CMAKE_INSTALL_MODE=SYMLINK\
+		ninja install) 2>&1 | tee $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
 $R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST)
@@ -303,15 +308,6 @@ $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 	cd $S/$B.$* && PATH=$R/bin:$(PATH) $< configure\
 		-t $S/$* --prefix="$R" $($*.options)
 
-CAFF = $(shell which caffeinate)
-$O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
-	$(MAKEFILE_LIST) $f
-	mkdir -p $(dir $@)
-	(cd $O/$B.$* && time $(CAFF) nice ninja -d explain -vj1) 2>&1 |\
-		tee -a $@.tmp.txt
-	$(AFSCTOOL) -cfvvv $O/$B.$*
-	mv -v $@.tmp.txt $@
-
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides)) 2>&1 |\
@@ -322,9 +318,21 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 	chmod +x $(dir $<)/configure
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
-		$($*.envvars) $(dir $<)/configure $(options)\
+		$($*.envvars) PATH=$(tools)$R/bin:$(PATH)\
+			$(dir $<)/configure $(options)\
 			$($*.options) $($*.options.$(b0)) --prefix="$R" 2>&1|\
 			tee _configure.log\
+
+CAFF = $(shell which caffeinate)
+$O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
+	$(MAKEFILE_LIST) $f
+	mkdir -p $(dir $@)
+	(cd $O/$B.$* &&\
+		PATH=$(tools)$(PATH)\
+		time $(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
+		tee $@.tmp.txt
+	$(AFSCTOOL) -cfvvv $O/$B.$*
+	mv -v $@.tmp.txt $@
 
 $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 	$(MAKEFILE_LIST)
@@ -336,14 +344,16 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
-		$($*.envvars) CFLAGS=-I$R/include python3.9 $S/meson/meson.py\
+		$($*.envvars) PATH=$(tools)$(PATH) CFLAGS=-I$R/include python3.8\
+		$S/meson/meson.py setup --reconfigure\
 		--prefix="$R" $($*.options) $(options) $S/$* 2>&1|\
 		tee meson_.log
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
-		$($*.envvars) cmake -DCMAKE_INSTALL_PREFIX="$R"\
+		$($*.envvars) PATH=$(tools)$(PATH)\
+		cmake -DCMAKE_INSTALL_PREFIX="$R"\
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
 		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
 		$(HERE)/$*

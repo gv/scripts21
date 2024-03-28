@@ -127,6 +127,7 @@
 (global-set-key (kbd "A-/") 'dabbrev-expand)
 ;; Use key from Vim
 (global-set-key (kbd "C-p") 'dabbrev-expand)
+(global-set-key (kbd "s-p") 'dabbrev-expand)
 (global-set-key (kbd "C-/") 'dabbrev-expand)
 ;; Putting this next to C-p to return to previous completion
 (define-key global-map (kbd "C-o") 'undo)
@@ -165,7 +166,10 @@
   (vg-message "Keyboard language switch disabled")))
 (define-key global-map (kbd "s-g") 'google-at-point)
 (define-key global-map (kbd "s-b") 'google-line)
-(define-key global-map (kbd "s-o") 'vg-line-2-tor-browser) 
+;; Adjacent bindings on Mac:
+;; s-n = New window, s-m = Minimize s-u =Revert 
+(define-key global-map (kbd "s-o") 'vg-line-2-tor-browser)
+;; TODO: s-j Google Scholar
 ;; Use with Shift on XFCE
 (define-key global-map (kbd "s-r") 'revert-buffer)
 (define-key global-map (kbd "s-k") 'kill-current-buffer)
@@ -226,7 +230,14 @@
 (define-key global-map (kbd "s-q") 'compile)
 ;; TODO `recompile` doesn't restore CWD of the last compile 
 (define-key global-map (kbd "s-y") 'recompile)
-(define-key global-map (kbd "s-s") 'gg)
+(define-key global-map (kbd "s-s") 'grep)
+(define-key global-map (kbd "s-d") 'vg-goto-git-root)
+(defun vg-goto-git-root () (interactive)
+ (find-file
+  (locate-dominating-file
+   (if (buffer-file-name)
+	(file-name-directory (buffer-file-name))
+	default-directory) ".git")))
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
 (define-key global-map [s-down] 'next-error)
@@ -506,7 +517,7 @@
  (load "../compact-blame/compact-blame.el")
  (setq compact-blame-bg1 "rainbow")
  (setq compact-blame-bg2 "rainbow2")
- (setq compact-blame-format "%Y%x%.%#")
+ (setq compact-blame-format "%Y%R%.%#")
  (setq compact-blame-light-coeff 1050)
  (setq compact-blame-name-limit 4))
 (load "markdown-mode/markdown-mode.el")
@@ -835,7 +846,7 @@
    (substring cc 0 (match-end 0)))))
 
 (defun vg-run-line () (interactive)
- (setq compile-command (Vg-get-current-line-escaped))
+ (setq compile-command (string-trim (Vg-get-current-line-escaped)))
  (save-buffer)
  (command-execute 'compile))
 
@@ -877,7 +888,7 @@
 (setenv "GREP_OPTIONS" "--binary-files=without-match")
 (setenv "PAGER" "cat")
 (setenv "PATH"
- "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
+ "/Library/Frameworks/Python.framework/Versions/3.8/bin:$PATH" t)
 (setenv "GCC_COLORS" "")
 (setq process-connection-type nil)  ;; No pty
 (setenv "SUDO_ASKPASS" "/usr/libexec/openssh/gnome-ssh-askpass")
