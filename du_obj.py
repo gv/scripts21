@@ -237,7 +237,7 @@ class Input:
 			ft = fl.GetType().GetCanonicalType()
 			if ft.name and name and name != ft.name:
 				name += " " + ft.name
-			print("%s%s %s" % (
+			print("%s%-8s %s" % (
 				prefix, "%d-%d" % (
 					fl.GetOffsetInBytes(),
 					fl.GetOffsetInBytes() + ft.size), name))

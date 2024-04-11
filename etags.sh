@@ -21,7 +21,7 @@ tests="\\btests?\\b|testsuite|unittest|benchmark"
 here=$(cd "$(dirname "$0")"; pwd)
 export GREP_OPTIONS=
 set -x
-rm -fv TAGS
+rm -fv TAGS TAGS.xz
 list "$@"| egrep -v $tests|\
   time nice xargs -n100 -t etags -a --regex '/JS_GLOBAL_FN(.+)/\1/'\
 	   --regex '/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
@@ -29,12 +29,15 @@ list "$@"| egrep -v $tests|\
 # Add only file names for tests
 list "$@"| egrep $tests| time nice xargs -n999 -t etags -a --language=none
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS
-xz -zf TAGS # This removes the source file
-ls -l TAGS.xz
+# xz doesn't work on Mac. Also, mb better results:
+#  -rw-r--r--    1 vg  staff   347K Mar 25 22:12 TAGS.bz2
+#  -rw-rw-r--    1 vg  staff   375K Mar  9 01:59 TAGS.xz
+bzip2 -vf TAGS # This removes the source file
+ls -l TAGS.bz2
 emacsclient=$(echo $EDITOR|grep emacsclient || echo emacsclient)
 x=$here/Linux.emacs/lib-src/emacsclient
 test -f "$x" && emacsclient=$x
 $emacsclient --eval "(progn
   		 (require 'etags)
 		 (tags-reset-tags-tables)
-		 (visit-tags-table \"TAGS.xz\"))"
+		 (visit-tags-table \"TAGS.bz2\"))"

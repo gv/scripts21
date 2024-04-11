@@ -144,7 +144,8 @@ class Input:
 		self.read(p.stdout, out)
 		r = p.wait()
 		if r != 0:
-			raise Exception("Status %d from '%s'" % (r, shlex.join(cmd)))
+			raise subprocess.CalledProcessError(r, cmd)
+			# raise Exception("Status %d from '%s'" % (r, shlex.join(cmd)))
 
 # TODO Should be subclass of Input
 class Build:
@@ -183,7 +184,7 @@ class Build:
 				sys.argv + ["--lid"]
 			print("Running '%s'..." %  shlex.join(cmd))
 			os.execvp(cmd[0], cmd)
-		msg = None
+		msg = code = 0
 		try:
 			self.mkdir(self.paths.build)
 			self.loadName()
@@ -193,11 +194,13 @@ class Build:
 				self.getName(), self.bl.describeTime(), self.saved.size)
 		except Exception as e:
 			msg = str(e)
+			code = getattr(e, "returncode", 1)
 		print(msg)
 		# TODO Archive this final line as well
 		if self.args.alert:
 			subprocess.check_call([
 				"zenity", "--info", "--text=" + msg])
+		sys.exit(code)
 
 	def checkOutput(self, cmd, **kw):
 		print("Running '%s'..." % (shlex.join(cmd)))
@@ -277,7 +280,7 @@ class Build:
 			if "-DCMAKE_BUILD_TYPE=RelWithDebInfo" == arg:
 				return [
 					arg,
-					"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-fsanitize=address"]
+					"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-fsanitize=address -static-libasan"]
 		return [arg]
 
 	def logBuildCommands(self, log):
@@ -351,8 +354,9 @@ if __name__ == "__main__":
 		BuildLogTool(args).run()
 		sys.exit(0)
 	if not args.docker:
-		Build({"commands": [args.POSITIONAL], "src": "."}, args).run()
-	Build(
+		sys.exit(Build(
+			{"commands": [args.POSITIONAL], "src": "."}, args).run())
+	sys.exit(Build(
 		{"commands": [args.POSITIONAL], "src": ".", "docker": "build:9"},
-		args).run()
+		args).run())
  

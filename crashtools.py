@@ -36,12 +36,15 @@ parser.add_argument(
 	help="Print stack of crashed thread")
 parser.add_argument(
 	"-x", "--thread", action="store_true", 
-	help="Print all stack words from crashed thread")
+	help="Unwind stack by counting PUSH/SUB *,SP instructions in code")
+parser.add_argument(
+	"-C", "--threadC", action="store_true", 
+	help="Print all stack words from crashed thread pointing to code")
 parser.add_argument(
 	"-y", "--threadn", help="Print all words from stack N")
 parser.add_argument(
 	"-X", "--threadX", action="store_true", 
-	help="Print all words crashed thread using `memory read -fA`")
+	help="Print all words from crashed thread using `memory read -fA`")
 parser.add_argument(
 	"-Y", "--threadm",
 	help="Print all words from stack N using `memory read -fA`")
@@ -134,7 +137,8 @@ class Target(Util):
 		# Hack: add mapping to nonexistent files so
 		# ModuleList::GetSharedModule gets called first without a real
 		# path and finds storage files in target.exec-search-paths
-		if self.args.storage:
+		if self.args.storage\
+			and hasattr(self.target, "AppendImageSearchPath"):
 			self.check(self.target.AppendImageSearchPath(
 				"/Volumes", self.args.storage, self.error))
 			self.check(self.target.AppendImageSearchPath(
@@ -146,15 +150,22 @@ class Target(Util):
 	def load(self, path):
 		self.path = path
 		self.verb("Loading '%s'..." % self.path)
-		self.process = self.check(self.target.LoadCore(path, self.error))
+		if sys.version_info[0] < 3:
+			self.process = self.target.LoadCore(path)
+		else:
+			self.process = self.check(self.target.LoadCore(path, self.error))
 		for m in self.target.modules:
 			if not self.args.storage:
 				continue
-			if not m.file.fullpath.startswith(self.args.storage) and\
-			   not m.file.fullpath.startswith(self.storagePath):
-				continue
+			self.verb("Looking for symbols for '%s'...\n" % (
+				m.file.fullpath))
 			pdb = m.file.fullpath + ".pdb"
 			if not os.path.isfile(pdb):
+				self.verb("No symbol file '%s'" % pdb)
+				continue
+			if 0 and\
+			   not m.file.fullpath.startswith(self.args.storage) and\
+			   not m.file.fullpath.startswith(self.storagePath):
 				continue
 			self.runDebuggerCommand("target symbols add %s" % pdb)
 			if os.path.realpath(m.GetSymbolFileSpec().fullpath) !=\
@@ -162,11 +173,11 @@ class Target(Util):
 				raise Exception(
 					"Symbol file path must be '%s' but is '%s'" % (
 					pdb, m.GetSymbolFileSpec().fullpath))
-		0 and sys.stderr.write("Module='%s' %d symbols in '%s' %d CUs\n" % (
-			self.module.GetFileSpec(),
-			self.module.GetNumSymbols(),
-			self.module.GetSymbolFileSpec(),
-			self.module.GetNumCompileUnits()))
+			self.verb("Module='%s' %d symbols in '%s' %d CUs\n" % (
+				m.GetFileSpec(),
+				m.GetNumSymbols(),
+				m.GetSymbolFileSpec(),
+				m.GetNumCompileUnits()))
 		self.verb("DONE\n")
 		return self
 
@@ -264,7 +275,11 @@ class Target(Util):
 	def printStackInfo(self, t):
 		sp = t.frames[0].sp
 		reg = lldb.SBMemoryRegionInfo()
-		check(self.process.GetMemoryRegionInfo(sp, reg))
+		error = self.process.GetMemoryRegionInfo(sp, reg)
+		if error.fail:
+			print("Thread%3d: sp=%s '%s' no region = '%s'" % (
+				t.idx, xx(t.frames[0].sp), t.GetStopDescription(80), error))
+			return None
 		print("Thread%3d: sp=%s in %s-%s (%s/%s words) '%s'" % (
 			t.idx, xx(t.frames[0].sp),
 			xx(reg.GetRegionBase()), xx(reg.GetRegionEnd()),
@@ -333,6 +348,7 @@ class Target(Util):
 					sys.stdout.write("%s=%s " % (
 						v.name, xx(v.GetValueAsUnsigned())))
 					prevVals[v.name] = v.value
+		print("")
 
 	def printInstruction(self, ii):
 		ibs = ""
@@ -344,10 +360,13 @@ class Target(Util):
 					ibs += "%s " % self.error
 				else:
 					ibs += "%02X " % bv
-		print(" %s %s%s %s ; %s" % (
+		comment = ii.GetComment(self.target)
+		if comment:
+			comment = " ; " + comment
+		print(" %s %s%s %s%s" % (
 			xx(ii.addr.GetLoadAddress(self.target)), ibs, 
 			ii.GetMnemonic(self.target),
-			ii.GetOperands(self.target), ii.GetComment(self.target)))
+			ii.GetOperands(self.target), comment))
 			
 	def getFuncInstructions(self, f):
 		# Doesn't work
@@ -379,6 +398,8 @@ class Target(Util):
 		self.printStackInfo(t)
 		self.printRegs(t.frames[0], {})
 		sp = t.frames[0].sp
+		self.lastPos = sp - ptrSize
+		self.prevPc = 0
 		self.printWord(sp - ptrSize, "pc: ", t.frames[0].pc)
 		reg = lldb.SBMemoryRegionInfo()
 		check(self.process.GetMemoryRegionInfo(sp, reg))
@@ -387,9 +408,17 @@ class Target(Util):
 				sp, reg.GetRegionEnd()))
 		else:
 #					reg.GetRegionBase(), reg.GetRegionEnd(), ptrSize):
-			for pos in range(
-					sp, reg.GetRegionEnd(), ptrSize):
+			pos = sp
+			while pos < reg.GetRegionEnd():
 				self.printWordAt(pos, True)
+				# To fix hang: move next pos calculation here
+				if self.args.threadC:
+					pos += ptrSize
+				else:
+					if self.prevPc == pos or self.prevPc == 0:
+						print("%X" % self.prevPc)
+						break
+					pos = self.prevPc
 
 	def printWordAt(self, pos, execOnly=False):
 		p = self.process.ReadPointerFromMemory(pos, self.error)
@@ -401,7 +430,10 @@ class Target(Util):
 			check(self.process.GetMemoryRegionInfo(p, reg))
 			if not reg.IsExecutable():
 				return
+		if pos - self.lastPos > ptrSize:
+			print("(%d words skipped)" % ((pos-self.lastPos)/ptrSize))
 		self.printWord(pos, xx(pos) + ": ", p)
+		self.lastPos = pos
 
 	def printWord(self, pos, prefix, p):
 		"""
@@ -431,24 +463,7 @@ class Target(Util):
 		if addr.symbol.IsValid():
 			insns = self.getFuncInstructions(addr)
 			if insns:
-				npush = sub = 0
-				for ii in insns:
-					mn = ii.GetMnemonic(self.target)
-					if "pushq" == mn:
-						npush += 1
-					elif "subq" == mn:
-						ops = ii.GetOperands(self.target).split(", %rsp")
-						if len(ops) == 2:
-							if sub:
-								sys.stdout.write(
-									"Extra sub SP instruction (1st sub=%X): " %
-									sub)
-								self.printInstruction(ii)
-							elif not ops[0].startswith("$"):
-								sys.stdout.write("Non-constant sub SP: ")
-								self.printInstruction(ii)
-							else:
-								sub = int(ops[0][1:], base=0)
+				npush, sub = self.getPushCountAndStackDecrement(insns)
 				for nn in range(insns.GetSize(), 0, -1):
 					ii = insns.GetInstructionAtIndex(nn - 1)
 					if ii.addr.offset > addr.offset:
@@ -464,8 +479,9 @@ class Target(Util):
 				# The meaning is `sub` is subtracted from SP inside the
 				# function. Lower SP values are closer to the top in the
 				# output, so the arrow should poit upwards
+				self.prevPc = pos+ptrSize+(npush*ptrSize)+sub
 				print("%d pushs + 0x%X SP\u2191, prev PC @ %s" % (
-					npush, sub, xx(pos+ptrSize+(npush*ptrSize)+sub)))
+					npush, sub, xx(self.prevPc)))
 		block = addr.block
 		count = 0
 		while 0 and block.IsValid():
@@ -477,10 +493,37 @@ class Target(Util):
 						count, block.GetInlinedName(), p))
 			block = block.GetParent()
 			count += 1
+		# This only prints "loc='static'". How do i get real var locations?
+		if 0:
+			# arguments, locals, statics
+			for v in block.GetVariables(self.target, True, True, False):
+				print("'%s' loc='%s' v='%s' t=%s(%d)" % (
+					v.name, v.location, v.value,
+					v.type.name, v.type.size))
 		sys.stdout.write("\n")
-			
+		
+	def getPushCountAndStackDecrement(self, insns):	
+		npush = sub = 0
+		for ii in insns:
+			mn = ii.GetMnemonic(self.target)
+			if "pushq" == mn:
+				npush += 1
+			elif "subq" == mn:
+				ops = ii.GetOperands(self.target).split(", %rsp")
+				if len(ops) == 2:
+					if sub:
+						sys.stdout.write(
+							"Extra sub SP instruction (1st sub=%X): " % sub)
+						self.printInstruction(ii)
+					elif not ops[0].startswith("$"):
+						sys.stdout.write("Non-constant sub SP: ")
+						self.printInstruction(ii)
+					else:
+						sub = int(ops[0][1:], base=0)
+		return npush, sub
 
 	def getAscii(self, pos, size):
+		# ReadCStringFromMemory can't specify the code page
 		seq = self.process.ReadMemory(pos, size, self.error)
 		if self.error.fail:
 			return "error: %s" % self.error
@@ -488,11 +531,6 @@ class Target(Util):
 			if b == 0:
 				return ""
 		return seq.decode("windows-1251")
-		seq = self.check(
-			self.process.ReadCStringFromMemory(pos, size, self.error))
-		if len.seq < size:
-			return ""
-		return seq
 
 	def doCmd(self, cmd):
 		self.verb("cmd: '%s'\n" % cmd)
@@ -521,7 +559,7 @@ class Target(Util):
 		Only need to call this if exec-search-paths doesn't pick up the
 		image for some reason
 		"""
-		for ver in os.listdir(self.args.storage):
+		for ver in ["."] + os.listdir(self.args.storage):
 			path = os.path.join(self.args.storage, ver, m.file.basename)
 			if not os.path.isfile(path):
 				continue
@@ -827,4 +865,8 @@ class Tool(Util):
 			   	t.printModules(self)
 
 if __name__ == "__main__":
+	# This makes my Mac (standard LLDB package) segfault 
+	if 0 and sys.version_info[0] < 3:
+		import codecs
+		sys.stdout = codecs.getwriter("utf-8")(sys.stdout)
 	Tool(parser.parse_args(), None).run()
