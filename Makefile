@@ -43,12 +43,12 @@ binutils-gdb.envvars = MAKEINFO=:
 
 qemu.envvars.Darwin = PKG_CONFIG=$R/bin/pkg-config
 qemu6.envvars.Darwin = $(qemu.envvars.Darwin)
-qemu.options = --target-list=x86_64-softmmu --disable-docs\
+qemu%: options = --target-list=x86_64-softmmu --disable-docs\
 	--disable-guest-agent --disable-curl\
-	--disable-live-block-migration
+	--disable-live-block-migration --enable-slirp
 # --enable-virtfs works only on Linux
-qemu.options.Linux = --enable-gtk
-qemu6.options = $(qemu.options)
+qemu%: options.Linux = --enable-gtk 
+
 pkg-config.options = --with-internal-glib
 __lldb.envvars = LLVM_DIR=$(Clang_DIR) Clang_DIR=$(Clang_DIR)
 __lldb.options = -DCMAKE_CXX_COMPILER=$(Clang_DIR)/bin/clang++\
@@ -62,6 +62,7 @@ lldb.options =\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
 	-DLLDB_USE_SYSTEM_DEBUGSERVER=ON\
 	-DLLDB_INCLUDE_TESTS=0\
+	-DLLDB_ENABLE_PYTHON=1\
 	-D CMAKE_EXE_LINKER_FLAGS=-g\
 	-D CMAKE_CXX_FLAGS=-g
 # CMAKE_INSTALL_MODE requires cmake 3.22
@@ -112,6 +113,9 @@ new-emacs.options = $(emacs.options)
 _build%evince: options=-Ddjvu=enabled -Dnautilus=false\
 	-Dintrospection=false -Dgtk_doc=false -Duser_doc=false\
 	-Dgspell=disabled
+
+zsh%: options = --with-tcsetpgrp
+
 #
 # To build with OS paths baked in:
 # scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
@@ -125,6 +129,9 @@ new-emacs.n: new-fake-manuals
 	echo "Fake" > $*emacs/info/emacs.info
 
 noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
+
+# qemu must skip meson.build
+qemu8.n_: qemu8.m_
 
 glib.m: pcre-8.45.m
 
@@ -248,7 +255,7 @@ $(AFSCTOOL.Darwin): $(AFSCTOOL.Darwin).c
 	gcc -o $@ $^
 
 .PRECIOUS: $O/$B.%/Makefile $O/$B.%/build.ninja\
-	%/configure %/Makefile.in\
+	%/configure %/Makefile.in %/Makefile\
 	$R/%.installed.logc $R/%.make.successful.log.txt\
 	$O/$B.%/%.ninja.success.logc $R/%.waf.successful.log.txt\
 	$(AFSCTOOL)
@@ -319,7 +326,7 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
 		$($*.envvars) PATH=$(tools)$R/bin:$(PATH)\
-			$(dir $<)/configure $(options)\
+			$(dir $<)/configure $(options) $(options.$(b0))\
 			$($*.options) $($*.options.$(b0)) --prefix="$R" 2>&1|\
 			tee _configure.log\
 
@@ -344,10 +351,11 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
-		$($*.envvars) PATH=$(tools)$(PATH) CFLAGS=-I$R/include python3.8\
-		$S/meson/meson.py setup --reconfigure\
+		$($*.envvars) PATH=$(tools)$(PATH) CFLAGS=-I$R/include python3.9\
+		$S/meson/meson.py setup\
 		--prefix="$R" $($*.options) $(options) $S/$* 2>&1|\
 		tee meson_.log
+# --reconfigure
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
@@ -358,9 +366,9 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
 		$(HERE)/$*
 
-makefile_in_src.%: %/Makefile
+%.makefile_in_src: %/Makefile
 	cd $(dir $^) && make --trace
-	cd $(dir $^) && make --trace install PREFIX=$R
+#	cd $(dir $^) && make --trace install PREFIX=$R
 
 %/Makefile: %/configure $(MAKEFILE_LIST) $(deps)
 	mkdir -p $(dir $@)

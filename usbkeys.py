@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
 Manipulate kernel scancode translation table or trace USB keyboard events
+
+Using the Japanese key requires the Japanese keyboard fw - download at
+https://mega.nz/#!B3hA0KzQ!Tf2KdyqDH58klad3OjeNjPQ-qe7K_KOHppJV20VK7fQ
+or https://www.gpd.hk/gpdp2firmware . Installer is Windows only. If not
+installed the scancode generated is the same as "`" key
 """
 import sys, argparse, ctypes, fcntl
 

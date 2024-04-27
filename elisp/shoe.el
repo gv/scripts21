@@ -99,15 +99,12 @@
 (define-key global-map [s-end] 'end-of-buffer)
 (define-key global-map (kbd "s-[") 'backward-sexp)
 (define-key global-map (kbd "s-]") 'forward-sexp)
-(global-set-key [(control y)] 
- '(lambda () (interactive)
-   (beginning-of-line)
-   (kill-line)))
 (global-set-key (kbd "A-k") 'kill-line)
 (define-key global-map (kbd "C-a") 'mark-whole-buffer)
 (define-key global-map (kbd "s-a") 'mark-whole-buffer)
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
+(define-key global-map (kbd "s-z") 'isearch-backward)
 ;; TODO Breaks all Alt key combinations
 ;; Trying to bind them throws:
 ;; "Key sequence ESC ESC starts with non-prefix key ESC"
@@ -160,19 +157,22 @@
 ;; End of code navigation
 
 (define-key global-map [f1] 'man)
-(define-key global-map (kbd "s-f") 'vg-insert-current-file-path)
 (define-key global-map (kbd "C-\\")
  (lambda () (interactive)
   (vg-message "Keyboard language switch disabled")))
 (define-key global-map (kbd "s-g") 'google-at-point)
-(define-key global-map (kbd "s-b") 'google-line)
-;; Adjacent bindings on Mac:
+(define-key global-map (kbd "s-b") 'end-of-buffer)
+(define-key global-map [f7] 'google-line)
+(define-key global-map [f9] 'gscholar-line)
+(define-key global-map [f12] 'vg-gh-search-line)
+;; Adjacent built-in bindings on Mac:
 ;; s-n = New window, s-m = Minimize s-u =Revert 
-(define-key global-map (kbd "s-o") 'vg-line-2-tor-browser)
-;; TODO: s-j Google Scholar
+(define-key global-map (kbd "s-o") 'find-file)
 ;; Use with Shift on XFCE
 (define-key global-map (kbd "s-r") 'revert-buffer)
-(define-key global-map (kbd "s-k") 'kill-current-buffer)
+(define-key global-map [s-delete]
+ (define-key global-map [s-kp-delete]
+  'kill-current-buffer))
 (define-key global-map [C-backspace] 'vg-backward-delete-word)
 (define-key global-map [M-backspace] 'vg-backward-delete-word)
 ;; Use a key from shell
@@ -195,16 +195,14 @@
  (lambda () (interactive) (switch-to-buffer "*compilation*")))
 (define-key global-map (kbd "s-5")
  (lambda () (interactive) (find-file "~")))
+(define-key global-map (kbd "s-8")
+ (lambda () (interactive)
+  (insert (format-time-string "\n* %c. Subject"))))
 
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
 (global-set-key [M-up] 'move-text-up)
-;; Option:
-;; (define-key global-map [s-delete]
-;;  (lambda () (interactive) (just-one-space -1)))
-(define-key global-map [s-delete]
- (lambda () (interactive) (cycle-spacing -1)))
-(define-key global-map [s-kp-delete]
+(define-key global-map [s-return]
  (lambda () (interactive) (cycle-spacing -1)))
 ;; A key from ncedit.exe
 (define-key global-map [f4] 'query-replace)
@@ -217,7 +215,7 @@
  (if (with-current-buffer "*Messages*"
 	  (let ((buffer-read-only nil))
 	   (call-process "gio" nil t nil "trash" "TODO: confirm")))
-  (vg-message "TODO")
+  (vg-message "TODO Make a function to trash the file + close buffer")
   (kill-buffer)))
 (define-key global-map [f8] 'vg-trash-buffer-file)
 
@@ -228,6 +226,9 @@
 
 ;; Compile/grep
 (define-key global-map (kbd "s-q") 'compile)
+;; Need some Ctrl key for compile to easily go to C-r
+(define-key global-map "\C-d" 'compile)
+(define-key global-map (kbd "C-`") 'compile)
 ;; TODO `recompile` doesn't restore CWD of the last compile 
 (define-key global-map (kbd "s-y") 'recompile)
 (define-key global-map (kbd "s-s") 'grep)
@@ -245,8 +246,37 @@
 (define-key global-map (kbd "M-f") 'tracker-search)
 (define-key global-map (kbd "s-l") 'vg-run-line)
 (define-key global-map (kbd "C-l") 'vg-run-line)
-(global-set-key [M-f7]  'find-name-dired)
+(define-key global-map (kbd "C-,") 'vg-insert-compile-command)
+(defun vg-insert-compile-command () (interactive)
+ (let ((dir (with-current-buffer "*compilation*" default-directory)))
+  (insert (format "cd %s && %s" dir (car compile-history)))))
+
+(defun vg-newterm-compile () (interactive)
+ (let ((cmd (read-shell-command "Command (+window): " compile-command
+             'compile-history)))
+  (compilation-start (concat "xfce4-terminal --hold --execute " cmd))))
+(define-key global-map [f5] 'vg-newterm-compile)
+
+(defun vg-compile-new-buf () (interactive)
+ "TODO Write function that renames *compilation* to something unique
+and starts new compile. Alternatively, start new compile as
+*compilation-ID*")
+
+(define-key global-map (kbd "s-f") 'vg-insert-current-file-path)
+;; Another key from Norton Commander
+;; TODO Doesn't work
+(define-key global-map [(control return)] 'vg-insert-current-file-path)
+(defun vg-insert-current-file-path () (interactive)
+ (insert
+  (or (buffer-file-name (window-buffer (minibuffer-selected-window)))
+   (with-current-buffer (window-buffer (minibuffer-selected-window))
+	default-directory))))
+
+;; XFCE overrides Alt-F7, also Alt-F1 F2 etc.
+(global-set-key [M-f7]  'find-name-dired) 
+(global-set-key [s-f7]  'find-name-dired) 
 (define-key global-map [f6] 'rename-buffer)
+(define-key global-map [s-escape] 'rename-buffer)
 
 (when (fboundp 'osx-key-mode)
  (define-key osx-key-mode-map [(end)] 'end-of-line)
@@ -301,6 +331,9 @@
 	 (string-trim
 	  (buffer-substring-no-properties (point-min) (point-max)))))
    (if (/= 0 status)
+	;; TODO
+	;; Output can be too much for the status console.
+	;; Need a version of this that will show output in a frame
 	(vg-message "Output: %s\n%s exited with status %s"
 	 output cmd status)
 	,@body)))
@@ -320,8 +353,6 @@
   (goto-char sp)))
 
 (require 'diff-mode)
-;; (add-hook 'diff-mode-hook 'Vg-tune-diff)
-;; (defun Vg-tune-diff ()
 (define-key diff-mode-map [delete] 'vg-diff-stash-file)
 ;; Mac Fn+Backspace
 (define-key diff-mode-map [kp-delete] 'vg-diff-stash-file)
@@ -363,12 +394,6 @@
    (expand-file-name "~/alpha-tor-browser/Browser/firefox")
    "--detach" url)))
 
-(defun vg-insert-current-file-path () (interactive)
- (insert
-  (or (buffer-file-name (window-buffer (minibuffer-selected-window)))
-   (with-current-buffer (window-buffer (minibuffer-selected-window))
-	default-directory))))
-
 (defun ft-at-point () "AKA go to def" (interactive)
 	   (find-tag (find-tag-default)))
 
@@ -389,17 +414,31 @@
   (find-tag-default)))
 
 (defun google-at-point () (interactive)
+ (Vg-search-at-point "https://www.google.com/search?q=%s"))
+
+(defun Vg-search-at-point (tmpl)
  (let
   ((q (Vg-current-word-or-selection)))
-  (Vg-open-browser (format "https://www.google.com/search?q=%s" q))))
+  (if q
+   (Vg-open-browser (format tmpl q))
+   (vg-message "No current word or selection")))) 
 
 (defun google-line () (interactive)
+ (Vg-search-current-line "https://www.google.com/search?q=%s"))
+
+(defun Vg-search-current-line (tmpl)
  (if (use-region-p)
-  (google-at-point)
+  (Vg-search-at-point tmpl)
   (Vg-open-browser
-   (format "https://www.google.com/search?q=%s"
+   (format tmpl
 	(replace-regexp-in-string "[[] []]\\|Q:" ""
 	 (thing-at-point 'line))))))
+
+(defun gscholar-line () (interactive)
+ (Vg-search-current-line "https://scholar.google.com/scholar?q=%s"))
+
+(defun vg-gh-search-line () (interactive)
+ (Vg-search-current-line "https://github.com/search?q=%s&type=code"))
 
 (defun Vg-open-browser (url)
  (if (equal window-system 'ns)
@@ -504,8 +543,9 @@
 ;;     ```````````
 ;;
 
-; Here we rely on load path set in .emacs. TODO use path of this file
-(autoload 'php-mode "php-mode.el" "XXX" t)
+;; Here we rely on load path set in .emacs.
+;; TODO use path of this file
+;; (autoload 'php-mode "php-mode.el" "XXX" t)
 (autoload 'wikipedia-mode "wikipedia-mode.el"
   "Major mode for editing documents in Wikipedia markup." t)
 (autoload 'rust-mode "rust-mode.el"
@@ -517,7 +557,7 @@
  (load "../compact-blame/compact-blame.el")
  (setq compact-blame-bg1 "rainbow")
  (setq compact-blame-bg2 "rainbow2")
- (setq compact-blame-format "%Y%R%.%#")
+ (setq compact-blame-format "%Y%x%.%#")
  (setq compact-blame-light-coeff 1050)
  (setq compact-blame-name-limit 4))
 (load "markdown-mode/markdown-mode.el")
@@ -598,8 +638,7 @@
 (add-hook 'shell-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
- (tune-dabbrev)
- (Vg-classify-as-punctuation "+$")
+ (Vg-classify-as-punctuation "+$/")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -608,6 +647,7 @@
  (define-key org-mode-map [C-tab] nil)
  (define-key org-mode-map [M-up] nil)
  (define-key org-mode-map [M-down] nil)
+ (define-key org-mode-map (kbd "C-,") nil)
  (auto-fill-mode 1)
  (setq-local case-fold-search t)
  (setq-local compile-command
@@ -642,14 +682,14 @@
  (setq compilation-scroll-output
   (not (string-match "/tasks.py" (format "%s" (process-command proc)))))
  ;; get characters out of "symbol" class
- (Vg-classify-as-punctuation "-<>/")
+ (Vg-classify-as-punctuation "-<>/&")
  (define-key compilation-mode-map "o" 'vg-open-url-desktop)
  (define-key compilation-mode-map "l" 'vg-load-url-editor)
  (define-key compilation-mode-map "f" 'vg-firefox-url)
  (define-key compilation-mode-map "e" 'vg-open-url-evince)
  (highlight-regexp Vg-url-pattern)
  ;; Highlight debug print
- (highlight-regexp "vg:.*$" 'hi-green))
+ (highlight-regexp "\\bvg:.*$" 'hi-green))
 (add-hook 'compilation-start-hook 'Vg-tune-compilation)
 
 (defun tracker-search () (interactive)
@@ -687,12 +727,9 @@
 (add-hook 'log-view-mode-hook 'vg-tune-log-view)
 
 (defun vg-tune-lisp ()
-  (Vg-classify-as-punctuation "@/"))
+  (Vg-classify-as-punctuation "@/:"))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
-
-(defun Vg-tune-tcl ()
- (Vg-classify-as-punctuation ":/"))
-(add-hook 'tcl-mode-hook 'Vg-tune-tcl)
+(add-hook 'tcl-mode-hook 'vg-tune-lisp)
 
 (defun vg-after-save ()
  (when
@@ -846,7 +883,11 @@
    (substring cc 0 (match-end 0)))))
 
 (defun vg-run-line () (interactive)
- (setq compile-command (string-trim (Vg-get-current-line-escaped)))
+ (setq compile-command
+  (string-trim
+   (if (use-region-p)
+	(buffer-substring-no-properties (region-beginning) (region-end))
+	(Vg-get-current-line-escaped))))
  (save-buffer)
  (command-execute 'compile))
 
@@ -861,7 +902,7 @@
  (interactive "fPath to man page: ")
  (man (format "-l %s" path)))
 
-(setq tramp-mode nil)
+(setq tramp-mode t)
 
 (defalias 'yes-or-no-p 'y-or-n-p)
 (defalias 'c 'compile)
@@ -872,6 +913,7 @@
 (defun vtt () (interactive)
  (require 'etags)
  (tags-reset-tags-tables)
+ ;; TODO Prompt should include path to the current tags table
  (command-execute 'visit-tags-table))
 
 (setq compile-command "systemd-inhibit --what=handle-lid-switch\
