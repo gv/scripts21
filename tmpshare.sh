@@ -15,7 +15,9 @@ if [ "$port" == ssh ]; then
 	exit 1
   fi
   shift 2
-  # TODO: Can default be a Unix domain socket
+  # TODO: Can default be a Unix domain socket?
+  # Even if that, share would be accessible from remote at $port
+  # Mb we should do random password?
   port=${2-4445}
 fi  
 password=${3-0000}

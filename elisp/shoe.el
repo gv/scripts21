@@ -105,10 +105,13 @@
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
 (define-key global-map (kbd "s-z") 'isearch-backward)
+(define-key global-map (kbd "s-t") 'isearch-backward)
 ;; TODO Breaks all Alt key combinations
 ;; Trying to bind them throws:
 ;; "Key sequence ESC ESC starts with non-prefix key ESC"
 ;; (define-key global-map (kbd "ESC") 'keyboard-quit)
+;; TODO 2: keyboard-quit is the original C-g,
+;; but abort-recursive-edit (C-]) works better
 (define-key global-map (kbd "ESC ESC") 'keyboard-quit)
 ;; Standard Mac 'other window' key
 (global-set-key (kbd "A-'") 'other-window)
@@ -197,7 +200,7 @@
  (lambda () (interactive) (find-file "~")))
 (define-key global-map (kbd "s-8")
  (lambda () (interactive)
-  (insert (format-time-string "\n* %c. Subject"))))
+  (insert (format-time-string "\n* %c. Subject\n"))))
 
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
@@ -244,18 +247,31 @@
 (define-key global-map [s-down] 'next-error)
 ;; Mimic Cmd-F on Mac Finder
 (define-key global-map (kbd "M-f") 'tracker-search)
-(define-key global-map (kbd "s-l") 'vg-run-line)
-(define-key global-map (kbd "C-l") 'vg-run-line)
+
+(define-key global-map (kbd "s-l") 'vg-run-paragraph)
+(define-key global-map (kbd "C-l") 'vg-run-paragraph)
+(define-key global-map (kbd "C-.")
+ (lambda () (interactive) (save-excursion (vg-run-line))))
+(defun vg-run-paragraph () (interactive)
+ (save-excursion
+  (while
+   (not (string-empty-p (string-trim (thing-at-point 'line t))))
+   (previous-line))
+  (next-line)
+  (vg-run-line)))
+
 (define-key global-map (kbd "C-,") 'vg-insert-compile-command)
 (defun vg-insert-compile-command () (interactive)
  (let ((dir (with-current-buffer "*compilation*" default-directory)))
-  (insert (format "cd %s && %s" dir (car compile-history)))))
+  (insert (format "cd %s &&\\\n %s" dir (car compile-history)))))
 
 (defun vg-newterm-compile () (interactive)
  (let ((cmd (read-shell-command "Command (+window): " compile-command
              'compile-history)))
-  (compilation-start (concat "xfce4-terminal --hold --execute " cmd))))
+  (compilation-start
+   (format "xfce4-terminal --hold --execute %s" cmd))))
 (define-key global-map [f5] 'vg-newterm-compile)
+(define-key global-map (kbd "s-j") 'vg-newterm-compile)
 
 (defun vg-compile-new-buf () (interactive)
  "TODO Write function that renames *compilation* to something unique
@@ -565,6 +581,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'markdown-mode-hook 'Vg-tune-md)
 
 (defun Vg-tune-md ()
+ (setq-local search-upper-case nil)
  (highlight-regexp ".xperience .*financial" 'hi-pink)
  (highlight-regexp ".xperience .*mbedded" 'hi-pink)
  (highlight-regexp ".xperience .*quant" 'hi-pink)
@@ -577,6 +594,8 @@ and starts new compile. Alternatively, start new compile as
  (highlight-regexp ".*visa.*" 'hi-pink)
  (highlight-regexp "German\b" 'hi-pink) 
  (highlight-regexp "working rights" 'hi-pink)
+ (highlight-regexp "Poland" 'hi-pink)
+ (highlight-regexp "Cracow" 'hi-pink)
  )
 
 ;; For Viewsourcewith Firefox extension
@@ -610,11 +629,10 @@ and starts new compile. Alternatively, start new compile as
 
 (defun vg-tune-py ()
   (setq
-   ;; c-basic-offset 2
    indent-tabs-mode t
    py-indent-tabs-mode t
-   tab-width 4
-   python-indent-offset 4
+   tab-width 2
+   python-indent-offset 2
    ))
 (add-hook 'python-mode-hook 'vg-tune-py)
 
@@ -876,9 +894,11 @@ and starts new compile. Alternatively, start new compile as
 ;; (signal 'quit nil)
 
 (defun Vg-get-current-line-escaped ()
+ ;; TODO: That doesn't get last character if in the bottom line
  (beginning-of-line)
  (let ((cc (buffer-substring-no-properties (point) (buffer-size))))
-  (string-match ".*[^\\\\]$" cc)
+  (string-match ".*[^\\\\]$" cc) ;; find 1st line without \
+  ;; replace '\'s
   (replace-regexp-in-string "\\\\?\n" ""
    (substring cc 0 (match-end 0)))))
 

@@ -33,10 +33,11 @@ trace.py --launch "/kabata/a2-docker/kdb --no-reg /home/vg/email.ks"\
 
 ... TODO
 
-Advantages over bcc:
+Advantages over bcc/bpftrace:
  Can unwind DWARF stack
  Synchronous, can't loose samples, doesn't need buffer size tuning
  Works on Mac (or at least did at some point)
+ Can parse ICU UnicodeStrings
 
 Disadvantages re. bcc:
  Very slow
@@ -286,7 +287,7 @@ class NamedTracePoint(TracePoint):
 				raise Exception("No calls in BreakpointCreateByName")
 			name = parts[0]
 			self.calls = parts[1:]
-		if ":" in name:
+		if "." in name:
 			self.filename, self.line = name.split(":")
 			self.line = int(self.line)
 		else:
@@ -369,20 +370,55 @@ class NamedTracePoint(TracePoint):
 			if length == 0:
 				return ()
 			f2 = fc2 * length
-			return struct.unpack(f2, getMemory(ptr, struct.calcsize(f2)))
-		def icu(ptr):
-			buf = getMemory(ptr, 48)
+			return struct.unpack(
+				f2, getMemory(ptr, struct.calcsize(f2)))
+		def icuold(ptr):
+			buf = getMemory(ptr, 64)
 			flags, length, start = struct.unpack(
 				"HxxxxxxixxxxP", buf[8:32])
 			if flags & 2:
-				return "SHORT " + bytes(buf[10:(10+(flags>>4)*2)]).decode("utf-16")
+				bb = bytes(buf[10:(10+(flags>>4)*2)])
+				return bb.decode("utf-16", errors="replace")
 			bb = bytes(getMemory(start, (length - 1) * 2))
 			try:
 				return bb.decode("utf-16")
 			except Exception:
 				hexDumpMem(
-					frame.thread.process, start, start+(length-1)*2, error)
+					frame.thread.process, start,
+					start+(length-1)*2, error)
 				raise
+		def icu(ptr):
+			"""
+/win/stuff/du_obj.py --types -i ~/a13-ninja/kdb UnicodeString
+size=64 name=icu_66::UnicodeString
+ 0-8      icu_66::Replaceable
+  0-8      icu_66::UObject
+   0-1      icu_66::UMemory
+ 8-64     fUnion icu_66::UnicodeString::StackBufferOrFields
+  0-56     fStackFields icu_66::UnicodeString::StackBufferOrFields::(unnamed struct)
+   0-2      fLengthAndFlags short
+   2-56     fBuffer char16_t[27]
+  0-24     fFields icu_66::UnicodeString::StackBufferOrFields::(unnamed struct)
+   0-2      fLengthAndFlags short
+   4-8      fLength int
+   8-12     fCapacity int
+   16-24    fArray char16_t *
+			"""
+			buf = getMemory(ptr, 64)
+			flags, length2, capacity, start = struct.unpack(
+				"HxxiixxxxP", buf[8:32])
+			if flags & 0x8000:
+				length = length2
+			else:
+				length = flags>>5
+			# print("length=%d"  % length)
+			# Length in 2byte chars
+			if flags & 2:
+				bb = bytes(buf[10:10+length*2])
+			else:
+				bb = bytes(getMemory(start, length*2))
+			return bb.decode("utf-16", errors="replace")
+			
 		def levelIn(tag):
 			GlobalContext.levels[tag] = GlobalContext.levels.get(tag, 0) + 1
 			return "%s %d" % (tag, GlobalContext.levels[tag])
@@ -398,11 +434,14 @@ class NamedTracePoint(TracePoint):
 			return GlobalContext.levels.get(tag, 0)
 		def u16(start, length):
 			return getMemory(start, length *2).decode("utf-16")
+		def s(format, start):
+			return struct.unpack(
+				format, getMemory(start, struct.calcsize(format)))
 		r = eval(cmd, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
 			m=getMemory, o=output,
 			g=GlobalContext,
-			x=xd,
+			x=xd, s=s,
 			vi=vi, vi0c=vi0c, v=v,
 			icu=icu, u16=u16,
 			levelIn=levelIn, levelOut=levelOut, level=level))
@@ -432,8 +471,13 @@ class NamedTracePoint(TracePoint):
 			toolProc.process.SetSelectedThread(frame.thread)
 			for cmd in self.commands:
 				c2 = self.substCommand(frame, cmd)
-				toolProc.write("%s%d %s= " % (
-					self.id, self.count, rightLimited(c2, 40)))
+				stackSize = ""
+				if 1 or toolProc.options.slen is 0:
+					stackSize = "\u2193%d" % (
+						frame.thread.GetNumFrames())
+				toolProc.write("%s%d%s %s= " % (
+					self.id, self.count, stackSize,
+					rightLimited(c2, 40)))
 				if toolProc.options.python or re.match(".*([(]|[+]=)", c2):
 					r = self.runScript(frame, c2)
 					toolProc.print(repr(r))
@@ -653,6 +697,7 @@ class Process(Util):
 
 	def write(self, msg):
 		sys.stdout.write(msg)
+		sys.stdout.flush()
 		self.writeToLog(msg)
 
 	def writeToLog(self, msg):
@@ -676,7 +721,9 @@ class Process(Util):
 			self.process = self.check(self.target.Launch(
 				self.debugger.GetListener(),
 				launch[1:],
-				None, None, None, None, os.getcwd(),
+				None, None, # env stdin
+				# TODO Don't see output anyway
+				"/dev/stderr", "/dev/stderr", os.getcwd(),
 				0, True, self.error));
 		elif re.match(r"\d+", pid):
 			ai = lldb.SBAttachInfo(int(pid))
@@ -715,7 +762,7 @@ class Process(Util):
 		if not self.stacksEnabled:
 			return
 		skipStart = None
-		if self.options.slen:
+		if self.options.slen is not None:
 			start = max(
 				frame.thread.GetNumFrames() - int(self.options.slen), 0)
 		else:
@@ -735,16 +782,16 @@ class Process(Util):
 				skipStart = None
 			else:
 				head = "%d" % f.idx
-			sl = self.getSourceLine(f, " at %s:%d")
-			name = f.addr.symbol.name
+				sl = self.getSourceLine(f, " at %s:%d")
+				name = f.addr.symbol.name
 			if sl and name:
 				name = name.split("(")[0]
-			sys.stderr.write("\r")
-			self.print("%7s %16x %s%s" % (
-				head, f.addr.GetLoadAddress(self.target),
-				self.printImage and (f.module.file.basename + " ") or "",
-				name) + sl)
-		self.lastPrintedStack = frame.thread.frames[::-1]
+				sys.stderr.write("\r")
+				self.print("%7s %16x %s%s" % (
+					head, f.addr.GetLoadAddress(self.target),
+					self.printImage and (f.module.file.basename + " ") or "",
+					name) + sl)
+				self.lastPrintedStack = frame.thread.frames[::-1]
 
 	def getSourceLine(self, f, template):
 		if not f.line_entry.IsValid() or not f.line_entry.file.fullpath:

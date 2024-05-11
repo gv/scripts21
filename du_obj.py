@@ -61,6 +61,12 @@ parser.add_argument(
 parser.add_argument(
 	"--recurse", "-r", action="store_true", help="List fields in pointer types")
 parser.add_argument(
+	"--target", "-t", action="store_true",
+	help="TODO Find paths to targets in a call graph")
+parser.add_argument(
+	"--show", action="store_true",
+	help="Print as much as possible debug info re: given line")
+parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
 args = parser.parse_args()
@@ -247,7 +253,6 @@ class Input:
 					continue
 				self.printFields(prefix + " ", ft.GetPointeeType(), printed)
 				
-
 	def printTypes(self, strings):
 		printed = set()
 		if not self.args.containing:
@@ -283,7 +288,8 @@ class Input:
 		self.printFields(" ", t, set())
 
 	def descAddr(self, addr):
-		return "%s:%016X" % (addr.GetSection().GetName(), addr.GetOffset())
+		return "%s:%016X" % (
+				addr.GetSection().GetName(), addr.GetOffset())
 
 	def dumpEntry(self, e, addr):
 		sys.stderr.write(
@@ -313,6 +319,62 @@ class Input:
 				size = 1 # idk?
 			addr.OffsetAddress(size);
 			context.progress(size)
+
+	def printContent(self, path, line):
+		for i in range(self.module.GetNumCompileUnits()):
+			cu = self.module.GetCompileUnitAtIndex(i)
+			if not path:
+				print(cu.GetFileSpec())
+				continue
+			# A CU has its path but it can contain line entries
+			# from other paths
+			# pp = str(cu.GetFileSpec()).split("/@/")[0]
+			self.printCu(cu, path, line)
+
+	def printCu(self, cu, path, line):
+		cuDataPrinted = False
+		if not line:
+			print("CU %s %s line entries" % (
+				cu.GetFileSpec(), cu.GetNumLineEntries()))
+		blocks = {}
+		for jj in range(cu.GetNumLineEntries()):
+			ee = cu.GetLineEntryAtIndex(jj)
+			if (str(ee.GetFileSpec()).endswith(path)) and\
+			   (ee.GetLine() == line or line is None):
+				start = ee.GetStartAddress()
+				end = ee.GetEndAddress()
+				if line and not cuDataPrinted:
+					print("CU %s %s line entries" % (
+						cu.GetFileSpec(), cu.GetNumLineEntries()))
+					cuDataPrinted = True
+				print("LE %s-%s at %s:%s" % (
+					start.offset, end.offset,
+					ee.GetFileSpec(), ee.GetLine()))
+				bb = self.check(self.target.ReadMemory(
+					start, end.offset - start.offset, self.error))
+				ii = self.target.GetInstructions(start, bb)
+				for inn in ii:
+					print(inn)
+				blocks[describeBlock(start.block)] = start.block
+		for bl in blocks.values():
+			self.printBlock(bl)
+
+	def printBlock(self, bl):
+		level = 0
+		pb = bl.parent
+		# pb = bl.GetContainingInlinedBlock()
+		if pb.IsValid():
+			level = self.printBlock(pb) + 1
+		print("%sblock %s '%s'" % (
+			" " * level, describeBlock(bl), bl.GetInlinedName()))
+		return level
+		
+
+def describeBlock(bl):
+	return " ".join("%s-%s" % (
+		bl.GetRangeStartAddress(i).offset,
+		bl.GetRangeEndAddress(i).offset) for
+					i in range(bl.GetNumRanges()))
 
 class FileSpecAndPrefixes:
 	def __init__(self):
@@ -656,6 +718,14 @@ class SymbolStat:
 
 class Calls(Context):
 	def prepare(self, inputs):
+		self.target = None
+		if self.args.PREFIX:
+			if len(self.args.PREFIX) > 1:
+				raise Exception("--calls only 1 target supported")
+			# TODO:
+			# 1 target might still be multiple locations if inlined
+			# Just store a symbol name for now
+			self.target = self.args.PREFIX[0]
 		self.symbolInfo = {}
 		self.unknown = self.unknownSrc = Count("<unknown source>")
 		self.unknownTgt = Count("<unknown target>")
@@ -697,6 +767,14 @@ class Calls(Context):
 			self.symbolInfo[key] = t = ss
 		t.count += 1
 
+	def printCall(self, src, ins, arg):
+		target = self.getLocation(arg, " at %s:%d")
+		if not target:
+			self.unknownTgt.size += 1
+			target = ""
+		print("%s %s -> %s%s" % (
+			src, ins.addr.symbol.name, arg.symbol.name, target))
+
 	def processInstruction(self, ins, input):
 		self.instructions.size += 1
 		command = ins.GetMnemonic(input.target)
@@ -708,13 +786,12 @@ class Calls(Context):
 		v = int(right, 16)
 		arg = lldb.SBAddress(v, input.target)
 		src = self.getLocation(ins.addr, "%s:%d:")
-		target = self.getLocation(arg, " at %s:%d")
-		if not target:
-			self.unknownTgt.size += 1
-			target = ""
 		if src:
-			print("%s %s -> %s%s" % (
-				src, ins.addr.symbol.name, arg.symbol.name, target))
+			if self.target:
+				if arg.symbol.name and self.target in arg.symbol.name:
+					self.printCall(src, ins, arg)
+			else:
+				self.printCall(src, ins, arg)
 		else:
 			self.unknownSrc.size += 1
 
@@ -839,10 +916,50 @@ class Maps(Context):
 		self.reportCounts(
 			list(sorted(self.sources.values())) + [
 				self.accounted])
-					
+
+class CallGraph:
+	def __init__(self, args):
+		self.args = args
+		self.path = None
+
+	def run(self):
+		import pydot
+		targets = []
+		for arg in self.args.PREFIX:
+			if arg.endswith(".dot") or arg.endswith(".gv"):
+				if self.path:
+					raise Exception("Only 1 graph path allowed")
+				self.path = arg
+				continue
+			targets.append(arg)
+		cg = pydot.graph_from_dot_file(self.path)
+
+class Show:
+	def __init__(self, args):
+		self.args = args
+
+	def run(self):
+		self.inputs = []
+		target = self.args.PREFIX.pop()
+		for path in self.args.PREFIX:
+			self.inputs.append(Input(path, args))
+		line = None
+		pp = target.split(":")
+		path = pp[0]
+		if len(pp) > 1:
+			line = int(pp[1])
+		for input in self.inputs:
+			input.printContent(path, line)
+
+			
 if args.instructions or args.git:
 	args.file = True
-((args.all or args.calls) and Calls or\
- args.map and Maps or args.file and Lines or Context)(args).run() 
+if args.target:
+	r = CallGraph(args).run()
+elif args.show:
+	r = Show(args).run()
+else:	
+	((args.all or args.calls) and Calls or\
+	 args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))

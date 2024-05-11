@@ -4,7 +4,7 @@ list() {
   if [ $# == 0 ]; then
 	git ls-files --recurse-submodules\
 		"*.cc" "*.cpp" "*.[chsm]" "*.java" "*.php" "*.py" "*.ks" "*.rb"\
-		"*.in" "*.tcl" "*.sh" "*.cxx" "*.hxx" "*.inc" "*.js"
+		"*.in" "*.tcl" "*.sh" "*.cxx" "*.hxx" "*.inc" "*.js" "*.rs"
   else
 	# Doesn't work bc `*` is substituted too soon
 	#
@@ -22,12 +22,14 @@ here=$(cd "$(dirname "$0")"; pwd)
 export GREP_OPTIONS=
 set -x
 rm -fv TAGS TAGS.xz
+# \(\) = subexpression, () = content. Match from the start
 list "$@"| egrep -v $tests|\
   time nice xargs -n100 -t etags -a --regex '/JS_GLOBAL_FN(.+)/\1/'\
 	   --regex '/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
-	   --regex '/JSO_DEFINE_EX[^,]+\(.+\)/\1/'
-# Add only file names for tests
-list "$@"| egrep $tests| time nice xargs -n999 -t etags -a --language=none
+	   --regex '/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
+	   --regex '/.*[. ]\(\w+\) = function/\1/'
+# Add only file names for tests (might be empty)
+list "$@"| egrep $tests| time nice xargs -n999 -t etags -a --language=none || true
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS
 # xz doesn't work on Mac. Also, mb better results:
 #  -rw-r--r--    1 vg  staff   347K Mar 25 22:12 TAGS.bz2
