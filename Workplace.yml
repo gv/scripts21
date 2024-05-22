@@ -1,0 +1,38 @@
+---
+
+- name: Some actions to setup workstation
+  hosts: all, localhost
+  tasks:
+  - name: Bash aliases, terminal deprioritization
+    blockinfile: 
+      path: ~/.bashrc
+      backup: yes
+      create: yes
+      marker: "# vg: {mark} ANSIBLE MANAGED BLOCK"
+      validate: bash -x %s
+      block: |
+        test -n "$COLORTERM" && renice +12 $$ && ionice -c3 -n7 -p $$
+        alias 2e=~/stuff/2emacs.py
+        alias inh="systemd-inhibit --what=handle-lid-switch"
+        alias inhj="systemd-inhibit --what=handle-lid-switch journalctl -f"
+        alias d3='docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
+        alias yd='python2 ~/src/youtube-dl/youtube_dl/__main__.py'
+  - name: Disable ssh password
+    become: true
+    lineinfile:
+      validate: 'sshd -t -f %s'
+      path: /etc/ssh/sshd_config
+      regexp: '^[^#\w]*PasswordAuthentication.*$'
+      line: 'PasswordAuthentication no'
+      
+- name: Some actions for a server account
+  hosts: all
+  tasks:
+  - name: authorized_keys
+    lineinfile:
+      path: ~/.ssh/authorized_keys
+      backup: yes
+      line: >-
+        ssh-ed25519
+        AAAAC3NzaC1lZDI1NTE5AAAAIGQcUAv+wO0lKeZEXH+Pawnr4L4fTJZADaQopwISzivs x
+
