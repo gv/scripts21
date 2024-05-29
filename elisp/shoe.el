@@ -104,7 +104,6 @@
 (define-key global-map (kbd "s-a") 'mark-whole-buffer)
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
-(define-key global-map (kbd "s-z") 'isearch-backward)
 (define-key global-map (kbd "s-t") 'isearch-backward)
 ;; TODO Breaks all Alt key combinations
 ;; Trying to bind them throws:
@@ -245,8 +244,9 @@
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
 (define-key global-map [s-down] 'next-error)
-;; Mimic Cmd-F on Mac Finder
+;; A key from Finder
 (define-key global-map (kbd "M-f") 'tracker-search)
+(define-key global-map (kbd "s-f") 'tracker-search)
 
 (define-key global-map (kbd "s-l") 'vg-run-paragraph)
 (define-key global-map (kbd "C-l") 'vg-run-paragraph)
@@ -278,7 +278,6 @@
 and starts new compile. Alternatively, start new compile as
 *compilation-ID*")
 
-(define-key global-map (kbd "s-f") 'vg-insert-current-file-path)
 ;; Another key from Norton Commander
 ;; TODO Doesn't work
 (define-key global-map [(control return)] 'vg-insert-current-file-path)
@@ -348,7 +347,7 @@ and starts new compile. Alternatively, start new compile as
 	  (buffer-substring-no-properties (point-min) (point-max)))))
    (if (/= 0 status)
 	;; TODO
-	;; Output can be too much for the status console.
+	;; Output can be too big for the status console.
 	;; Need a version of this that will show output in a frame
 	(vg-message "Output: %s\n%s exited with status %s"
 	 output cmd status)
@@ -377,39 +376,6 @@ and starts new compile. Alternatively, start new compile as
   (setq-local compile-command "git commit")
   (command-execute 'compile)))
  
-
-(defun vg-write+merge (dest) (interactive "fPath to write + merge:")
- ;; TODO: rewrite using a temp file instead of `git stash`
- (let ((sp (point)))
-  (when (file-directory-p dest)
-   (setq dest
-	(expand-file-name (file-name-nondirectory buffer-file-name)
-	 dest)))
-  (if (not (file-exists-p new-location))
-   (write-file dest)
-   (let ((default-directory (file-name-nondirectory)))
-	(Vg-with-cmd-output
-	 (list "git" "stash" "push" "-m"
-	  (format "Saving file '%s' for vg-write+merge" dest)
-	  "--" dest)
-	 (write-file dest)
-	 (unless (string= output "No local changes to save")
-	  (if
-	   (string-match
-		"and index state WIP on [^:]+: \\([0-9a-zA-Z]+\\)" output)
-	   (Vg-with-cmd-output
-		(list "git" "stash" "apply" (match-string 1 output)))
-	   (vg-message "Unknown output from %s: %s" cmd output))
-	  (revert-buffer)
-	  (goto-char sp)))))))
-
-(defun vg-line-2-tor-browser () (interactive)
- ;; TODO: Doesn't work, shows "running but not responding" msg
- (let ((url (thing-at-point 'line t)))
-  (Vg-start-process "setsid" "nohup"
-   (expand-file-name "~/alpha-tor-browser/Browser/firefox")
-   "--detach" url)))
-
 (defun ft-at-point () "AKA go to def" (interactive)
 	   (find-tag (find-tag-default)))
 
@@ -432,6 +398,14 @@ and starts new compile. Alternatively, start new compile as
 (defun google-at-point () (interactive)
  (Vg-search-at-point "https://www.google.com/search?q=%s"))
 
+(define-key global-map [f4]
+ (lambda () (interactive)
+  (Vg-search-current-line
+   "https://www.youtube.com/results?search_query=%s"
+   " -\"hey delphi\"\
+  -\"Roel Van de Paar\" -iluvatar1 -\"A To Z Hacks\" -\"Quick Notepad\
+  Tutorial\" -\"Diverter NoKYC\" -\"News Source Crawler\"")))
+  
 (defun Vg-search-at-point (tmpl)
  (let
   ((q (Vg-current-word-or-selection)))
@@ -442,13 +416,17 @@ and starts new compile. Alternatively, start new compile as
 (defun google-line () (interactive)
  (Vg-search-current-line "https://www.google.com/search?q=%s"))
 
-(defun Vg-search-current-line (tmpl)
+(defun Vg-search-current-line (tmpl &optional suffix)
  (if (use-region-p)
   (Vg-search-at-point tmpl)
   (Vg-open-browser
    (format tmpl
-	(replace-regexp-in-string "[[] []]\\|Q:" ""
-	 (thing-at-point 'line))))))
+	(url-hexify-string
+	 (string-trim
+	  (concat 
+	   (replace-regexp-in-string "[[] []]\\|Q:" ""
+		(Vg-get-current-line-escaped))
+	   suffix)))))))
 
 (defun gscholar-line () (interactive)
  (Vg-search-current-line "https://scholar.google.com/scholar?q=%s"))
@@ -464,7 +442,9 @@ and starts new compile. Alternatively, start new compile as
 (defun vg-open (x)
  (let ((cmd (append (if (equal window-system 'ns) '("open")
 					 '("setsid" "nohup" "xdg-open")) (list x))))
-  (apply 'Vg-start-process cmd)))
+  ;;(apply 'Vg-start-process cmd)
+  (Vg-with-cmd-output cmd)
+  ))
 
 (defun Vg-start-process (&rest cmd)
  (vg-message "Running %s" cmd)
@@ -532,26 +512,12 @@ and starts new compile. Alternatively, start new compile as
 ;;    КОДИРОВКИ
 ;;    `````````
 ;;
-
-;;Используем Windows 1251
-;(set-language-environment "Russian")
-;(define-coding-system-alias 'windows-1251 'cp1251)
-;(set-buffer-file-coding-system 'windows-1251-dos)
-;(set-default-coding-systems 'windows-1251-dos)
-;(set-terminal-coding-system 'windows-1251-dos)
-;(set-selection-coding-system 'windows-1251-dos)
-;(set-clipboard-coding-system 'windows-1251-dos)
-;;
 ;; Использовать окружение UTF-8
 (set-language-environment 'UTF-8)
 (set-buffer-file-coding-system 'utf-8-unix)
 (set-default-coding-systems 'utf-8-unix)
 (set-terminal-coding-system 'utf-8-dos)
 (set-selection-coding-system 'utf-8-dos)
-;;(prefer-coding-system 'koi8-r-dos)
-;;(prefer-coding-system 'cp866-dos)
-;;(prefer-coding-system 'windows-1251-dos)
-;;(prefer-coding-system 'utf-8-unix)
 (setq coding-system-for-read 'utf-8)
 
 ;; 
@@ -561,7 +527,6 @@ and starts new compile. Alternatively, start new compile as
 
 ;; Here we rely on load path set in .emacs.
 ;; TODO use path of this file
-;; (autoload 'php-mode "php-mode.el" "XXX" t)
 (autoload 'wikipedia-mode "wikipedia-mode.el"
   "Major mode for editing documents in Wikipedia markup." t)
 (autoload 'rust-mode "rust-mode.el"
@@ -581,25 +546,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'markdown-mode-hook 'Vg-tune-md)
 
 (defun Vg-tune-md ()
- (setq-local search-upper-case nil)
- (highlight-regexp ".xperience .*financial" 'hi-pink)
- (highlight-regexp ".xperience .*mbedded" 'hi-pink)
- (highlight-regexp ".xperience .*quant" 'hi-pink)
- (highlight-regexp ".xperience .*trading" 'hi-pink)
- (highlight-regexp ".xperience .*icrocontrollers" 'hi-pink)
- (highlight-regexp ".xperience .*ndroid" 'hi-pink)
- (highlight-regexp ".*mbedded.*xperience.*" 'hi-pink)
- (highlight-regexp ".*ow.latency.*xperience.*" 'hi-pink)
- (highlight-regexp ".itizen" 'hi-pink)
- (highlight-regexp ".*visa.*" 'hi-pink)
- (highlight-regexp "German\b" 'hi-pink) 
- (highlight-regexp "working rights" 'hi-pink)
- (highlight-regexp "Poland" 'hi-pink)
- (highlight-regexp "Cracow" 'hi-pink)
- )
-
-;; For Viewsourcewith Firefox extension
-;;(add-to-list 'auto-mode-alist '("index.\\.*" . wikipedia-mode))
+ (setq-local search-upper-case nil))
 
 (defun vg-tune-c ()
   (setq c-basic-offset 4
@@ -712,7 +659,10 @@ and starts new compile. Alternatively, start new compile as
 
 (defun tracker-search () (interactive)
  (let ((cmd (read-shell-command "Command: "
-			 (concat "tracker search --limit=999 --disable-color "
+			 (concat
+			  (if (equal window-system 'ns)
+			   "mdfind "
+			   "tracker search --limit=999 --disable-color ")
 			  (Vg-current-word-or-selection)))))
   (compilation-start cmd 'compilation-mode
    (lambda (&rest _) "*tracker-search*"))))
@@ -721,7 +671,11 @@ and starts new compile. Alternatively, start new compile as
  `(let* ((line (thing-at-point 'line t))
 		 (url
 		  (if (string-match Vg-url-pattern line)
-		   (match-string 0 line))))
+		   (match-string 0 line)
+		   ;; Not an url but absolute path - also need that for
+		   ;; mdfind output
+		   (if (string-match "^/" line)
+			(string-trim line)))))
    (if url
 	(progn ,@body)
 	(message "No url on current line"))))
@@ -730,7 +684,9 @@ and starts new compile. Alternatively, start new compile as
  (Vg-open-url (vg-open url)))
 
 (defun vg-load-url-editor () (interactive)
- (Vg-open-url (find-file (url-unhex-string (match-string 1 line)))))
+ (Vg-open-url
+  (find-file (if (string-match "^/" url) url
+			  (url-unhex-string (match-string 1 line))))))
 
 (defun vg-open-url-evince () (interactive)
  (Vg-open-url
@@ -748,14 +704,6 @@ and starts new compile. Alternatively, start new compile as
   (Vg-classify-as-punctuation "@/:"))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
 (add-hook 'tcl-mode-hook 'vg-tune-lisp)
-
-(defun vg-after-save ()
- (when
-  (and (string-equal (format "%s" mode-name) "Emacs-Lisp")
-   (not (string-match "/\\(shoe\\|.dir-locals\\).el$" buffer-file-name)))
-  (vg-message "Saved %s & evaluating..." buffer-file-name)
-  (eval-buffer)))
-(add-hook 'after-save-hook 'vg-after-save)
 
 (defun vg-file-open ()
  (highlight-regexp "[[:nonascii:]]"))
@@ -947,11 +895,11 @@ and starts new compile. Alternatively, start new compile as
   (if (string-match "/src/" invocation-directory)
    (expand-file-name "../lib-src/emacsclient" invocation-directory)
    (expand-file-name "bin/emacsclient" invocation-directory))))
-(setenv "GREP_OPTIONS" "--binary-files=without-match")
 (setenv "PAGER" "cat")
 (setenv "PATH"
- "/Library/Frameworks/Python.framework/Versions/3.8/bin:$PATH" t)
+ "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
 (setenv "GCC_COLORS" "")
+(setq shell-command-switch "-ic")
 (setq process-connection-type nil)  ;; No pty
 (setenv "SUDO_ASKPASS" "/usr/libexec/openssh/gnome-ssh-askpass")
 (setq-default case-fold-search nil case-replace nil
