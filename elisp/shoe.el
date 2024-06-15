@@ -110,7 +110,8 @@
 ;; "Key sequence ESC ESC starts with non-prefix key ESC"
 ;; (define-key global-map (kbd "ESC") 'keyboard-quit)
 ;; TODO 2: keyboard-quit is the original C-g,
-;; but abort-recursive-edit (C-]) works better
+;; but abort-recursive-edit (C-]) works better.
+;; Need to C-g 3 times to get out of isearch. Smth should be done
 (define-key global-map (kbd "ESC ESC") 'keyboard-quit)
 ;; Standard Mac 'other window' key
 (global-set-key (kbd "A-'") 'other-window)
@@ -168,15 +169,18 @@
 (define-key global-map [f9] 'gscholar-line)
 (define-key global-map [f12] 'vg-gh-search-line)
 ;; Adjacent built-in bindings on Mac:
-;; s-n = New window, s-m = Minimize s-u =Revert 
+;; s-n = New window, s-m = Minimize, s-u = Revert, s-k = Close file 
 (define-key global-map (kbd "s-o") 'find-file)
 ;; Use with Shift on XFCE
 (define-key global-map (kbd "s-r") 'revert-buffer)
 (define-key global-map [s-delete]
  (define-key global-map [s-kp-delete]
   'kill-current-buffer))
+;; Make it the same as Firefox 'kill tab' on Mac
+(define-key global-map (kbd "s-w") 'kill-current-buffer)
 (define-key global-map [C-backspace] 'vg-backward-delete-word)
 (define-key global-map [M-backspace] 'vg-backward-delete-word)
+(define-key global-map [s-backspace] 'vg-backward-delete-word)
 ;; Use a key from shell
 (define-key global-map (kbd "C-w") 'vg-backward-delete-word)
 (define-key global-map [s-left] 'previous-buffer)
@@ -283,9 +287,9 @@ and starts new compile. Alternatively, start new compile as
 (define-key global-map [(control return)] 'vg-insert-current-file-path)
 (defun vg-insert-current-file-path () (interactive)
  (insert
-  (or (buffer-file-name (window-buffer (minibuffer-selected-window)))
-   (with-current-buffer (window-buffer (minibuffer-selected-window))
-	default-directory))))
+  (with-current-buffer (window-buffer (minibuffer-selected-window))
+   (or buffer-file-name default-directory))))
+(define-key global-map (kbd "C-'") 'vg-insert-current-file-path)
 
 ;; XFCE overrides Alt-F7, also Alt-F1 F2 etc.
 (global-set-key [M-f7]  'find-name-dired) 
@@ -525,8 +529,8 @@ and starts new compile. Alternatively, start new compile as
 ;;     ```````````
 ;;
 
-;; Here we rely on load path set in .emacs.
-;; TODO use path of this file
+;; Here we rely on load path having been set in .emacs.
+;; TODO Use path of this file
 (autoload 'wikipedia-mode "wikipedia-mode.el"
   "Major mode for editing documents in Wikipedia markup." t)
 (autoload 'rust-mode "rust-mode.el"
@@ -594,10 +598,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'emacs-lisp-mode-hook 'compact-blame-mode)
 
 (defun tune-dabbrev ()
- (Vg-classify-as-punctuation "/")
-  ;;(set (make-local-variable 'dabbrev-abbrev-char-regexp) "[A-Za-z0-9_]")
-  ;;(vg-message "dabbrev-abbrev-char-regexp set to '%s'" dabbrev-abbrev-char-regexp)
-  )
+ (Vg-classify-as-punctuation "/"))
 
 (add-hook 'sh-mode-hook 'tune-dabbrev)
 (add-hook 'shell-mode-hook 'tune-dabbrev)
@@ -838,17 +839,19 @@ and starts new compile. Alternatively, start new compile as
  (switch-to-buffer "*grep*")
  (command-execute 'grep))
 
-;; That doesn't cancel user inpuut request
+;; That doesn't cancel user input request
 ;; (signal 'quit nil)
 
 (defun Vg-get-current-line-escaped ()
- ;; TODO: That doesn't get last character if in the bottom line
  (beginning-of-line)
- (let ((cc (buffer-substring-no-properties (point) (buffer-size))))
+ ;; b-s-n-p and (point) go from 1, so (buffer-size) won't work here
+ ;; (see Help for point-max for confirmation)
+ (let ((cc (buffer-substring-no-properties (point) (point-max))))
   (string-match ".*[^\\\\]$" cc) ;; find 1st line without \
   ;; replace '\'s
   (replace-regexp-in-string "\\\\?\n" ""
    (substring cc 0 (match-end 0)))))
+;; (format "cc='%s' p=%s s=%s end=%s" cc (point) (buffer-size) (match-end 0)))))
 
 (defun vg-run-line () (interactive)
  (setq compile-command
