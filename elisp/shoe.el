@@ -892,11 +892,20 @@ and starts new compile. Alternatively, start new compile as
 (defalias 'cbm 'compact-blame-mode)
 (defalias 'gl 'git-log)
 (defalias 'vcprl 'vc-print-root-log)
-(defun vtt () (interactive)
+(defun vtt (path local)
+ (interactive
+  (let ((default-tag-dir
+         (or (locate-dominating-file default-directory "TAGS.bz2")
+          default-directory)))
+   (list (read-file-name
+          (format-prompt "Visit tags table, current='%s'" "TAGS.bz2"
+		   tags-file-name)
+          default-tag-dir
+          (expand-file-name "TAGS.bz2" default-tag-dir) t)
+    current-prefix-arg)))
  (require 'etags)
  (tags-reset-tags-tables)
- ;; TODO Prompt should include path to the current tags table
- (command-execute 'visit-tags-table))
+ (visit-tags-table path local))
 
 (setq compile-command "systemd-inhibit --what=handle-lid-switch\
  ionice -c3 scl enable gcc-toolset-12 'make -k'")

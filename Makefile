@@ -107,14 +107,14 @@ __pdf2djvu.options = "POPPLER_CFLAGS=-I $(HERE)/../third_party/include"\
 pdf2djvu.overrides = -f ../pdf2djvu/Makefile
 usb.options = CFLAGS="-Wno-incompatible-pointer-types -Wno-format"
 keyfuzz.options = --disable-lynx
-emacs.options=--with-tiff=no --with-xpm=no --with-gnutls=no\
-	--with-jpeg=no --with-gif=no
-new-emacs.options = $(emacs.options)
 _build%evince: options=-Ddjvu=enabled -Dnautilus=false\
 	-Dintrospection=false -Dgtk_doc=false -Duser_doc=false\
 	-Dgspell=disabled
 
 zsh%: options = --with-tcsetpgrp
+
+%emacs: options = --with-tiff=no --with-xpm=no --with-gnutls=no\
+	--with-jpeg=no --with-gif=no
 
 #
 # To build with OS paths baked in:
@@ -317,7 +317,7 @@ $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides)) 2>&1 |\
+	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides) --trace) 2>&1 |\
 		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
