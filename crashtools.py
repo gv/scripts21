@@ -55,6 +55,8 @@ parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument(
 	"-w", "--dverbose", action="store_true",
 	help="LLDB verbose output")
+parser.add_argument(
+	"-l", "--long", action="store_true", help="Not abbrev build ids")
 
 try:
 	import lldb
@@ -76,9 +78,17 @@ def check(error):
 def cut(s, limit):
 	return len(s) > (limit+3) and "%s..." % s[:limit] or s
 
-def getId(m):
+def getId(m, long=False):
 	s = m.GetUUIDString()
-	return s and "".join(s.split("-")).upper() # + "0"
+	if not s:
+		return s
+	s = "".join(s.split("-")).upper() # + "0"
+	if long:
+		return s
+	return s[0:8]
+
+def justifyId(m, long=False):
+	return (long and "%40s" or "%8s") % getId(m, long)
 
 def nn(n):
 	n = str(int(n))
@@ -143,20 +153,29 @@ class Target(Util):
 				"/Volumes", self.args.storage, self.error))
 			self.check(self.target.AppendImageSearchPath(
 				"/Applications", self.args.storage, self.error))
-		self.storagePath = os.path.abspath(self.args.storage)
 		if self.args.download:
 			self.setVar("target.preload-symbols", "false")
 			
 	def load(self, path):
 		self.path = path
+		if self.args.storage:
+			self.storagePath = os.path.abspath(self.args.storage)
+		else:
+			self.storagePath = os.path.dirname(os.path.abspath(self.path))
+		self.verb("storage='%s'" % self.storagePath)
+		dirs = [self.storagePath] +\
+				[os.path.join(self.storagePath, x) for
+					x in os.listdir(self.storagePath) if
+					not x.startswith(".")]
+		# TODO Check spaces in paths
+		self.setVar("target.exec-search-paths", " ".join(dirs))
 		self.verb("Loading '%s'..." % self.path)
 		if sys.version_info[0] < 3:
 			self.process = self.target.LoadCore(path)
 		else:
-			self.process = self.check(self.target.LoadCore(path, self.error))
+			self.process = self.check(
+				self.target.LoadCore(path, self.error))
 		for m in self.target.modules:
-			if not self.args.storage:
-				continue
 			self.verb("Looking for symbols for '%s'...\n" % (
 				m.file.fullpath))
 			pdb = m.file.fullpath + ".pdb"
@@ -406,19 +425,20 @@ class Target(Util):
 		if self.args.threadm or self.args.threadX:
 			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
 				sp, reg.GetRegionEnd()))
-		else:
-#					reg.GetRegionBase(), reg.GetRegionEnd(), ptrSize):
-			pos = sp
-			while pos < reg.GetRegionEnd():
-				self.printWordAt(pos, True)
-				# To fix hang: move next pos calculation here
-				if self.args.threadC:
+			return
+		pos = sp
+		while pos < reg.GetRegionEnd():
+			self.printWordAt(pos, True)
+			# To fix hang: move next pos calculation here
+			if self.args.threadC:
+				pos += ptrSize
+			else:
+				if self.prevPc == pos or self.prevPc == 0:
 					pos += ptrSize
-				else:
-					if self.prevPc == pos or self.prevPc == 0:
-						print("%X" % self.prevPc)
-						break
-					pos = self.prevPc
+					continue
+					# print("%X" % self.prevPc)
+					# break
+				pos = self.prevPc
 
 	def printWordAt(self, pos, execOnly=False):
 		p = self.process.ReadPointerFromMemory(pos, self.error)
@@ -450,7 +470,7 @@ class Target(Util):
 		elif addr.section.IsValid():
 			desc = "sect %s+%s" % (addr.section.name, xx(addr.offset))
 			if ".module_image" == addr.section.name:
-				desc += " (buildId=%s)" % getId(addr.module)
+				desc += " (buildId=%s)" % getId(addr.module, self.args.long)
 		sys.stdout.write("%s%s %s %s" % (
 			prefix, xx(p), self.getName(addr.module), desc))
 		sys.stdout.flush()
@@ -482,6 +502,7 @@ class Target(Util):
 				self.prevPc = pos+ptrSize+(npush*ptrSize)+sub
 				print("%d pushs + 0x%X SP\u2191, prev PC @ %s" % (
 					npush, sub, xx(self.prevPc)))
+				sys.stdout.flush()
 		block = addr.block
 		count = 0
 		while 0 and block.IsValid():
@@ -632,8 +653,8 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 					(self.args.stat and m.uuid or self.path), name))
 				continue
 			elif self.args.modules:
-				print("%2d %08X %40s %s '%s' %s" % (
-					m.num_sections, fsize, getId(m),
+				print("%2d %08X %s %s '%s' %s" % (
+					m.num_sections, fsize, justifyId(m, self.args.long),
 					xx(self.getSomeLoadAddress(m)), name,
 					self.getSymbolFileName(m)))
 		if self.args.stat:
@@ -684,7 +705,7 @@ class DownloadTemplate:
 	def run(self, tool):
 		m = self.module
 		url = self.server.getUrl(self.template % (
-			m.file.basename, getId(m), m.file.basename))
+			m.file.basename, getId(m, self.args.long), m.file.basename))
 		name = url.split("/")[-1].split(".tar.bz2")[0]
 		expected = os.path.join(m.file.dirname, name)
 		if os.path.isdir(expected):
@@ -796,11 +817,6 @@ class Tool(Util):
 		# This is faster than replacing modules in fixModulesNotInStorage
 		if self.args.storage:
 			self.args.storage = self.args.storage.rstrip("/")
-			dirs = [self.args.storage] +\
-				[os.path.join(self.args.storage, x) for
-					x in os.listdir(self.args.storage) if
-					not x.startswith(".")]
-			self.setVar("target.exec-search-paths", " ".join(dirs))
 		if self.args.dverbose:
 			# doesn't check categories
 			if not self.debugger.EnableLog("lldb", ["dyld"]):
@@ -840,8 +856,9 @@ class Tool(Util):
  -o 'target create --core %s'" % (self.args.storage, t.path)
 			for mo in t.target.modules:
 				if mo.GetSymbolFileSpec().IsValid():
-					cmd += " -o 'target symbols add %s'" % (
-						mo.GetSymbolFileSpec().fullpath)
+					if mo.GetSymbolFileSpec() != mo.file:
+						cmd += " -o 'target symbols add %s'" % (
+							mo.GetSymbolFileSpec().fullpath)
 			print(cmd)
 		if self.args.download:
 			self.work += t.queueDownloadSymbols(Server(self.args))
