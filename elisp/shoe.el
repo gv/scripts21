@@ -100,8 +100,12 @@
 (define-key global-map (kbd "s-[") 'backward-sexp)
 (define-key global-map (kbd "s-]") 'forward-sexp)
 (global-set-key (kbd "A-k") 'kill-line)
-(define-key global-map (kbd "C-a") 'mark-whole-buffer)
-(define-key global-map (kbd "s-a") 'mark-whole-buffer)
+(defun vg-mark-whole-buffer () (interactive)
+ (setq transient-mark-mode '(only . t))
+ (mark-whole-buffer))
+(define-key global-map (kbd "C-a") 'vg-mark-whole-buffer)
+(define-key global-map (kbd "s-a") 'vg-mark-whole-buffer)
+
 ;; [C-f] didn't work
 (define-key global-map (kbd "C-f") 'isearch-forward)
 (define-key global-map (kbd "s-t") 'isearch-backward)
@@ -409,7 +413,12 @@ and starts new compile. Alternatively, start new compile as
    " -\"hey delphi\"\
   -\"Roel Van de Paar\" -iluvatar1 -\"A To Z Hacks\" -\"Quick Notepad\
   Tutorial\" -\"Diverter NoKYC\" -\"News Source Crawler\"")))
-  
+
+(define-key global-map [s-f4]
+ (lambda () (interactive)
+  (Vg-search-current-line 
+   "https://www.opensubtitles.org/en/search2/sublanguageid-ger/moviename-%s")))
+
 (defun Vg-search-at-point (tmpl)
  (let
   ((q (Vg-current-word-or-selection)))
@@ -613,6 +622,8 @@ and starts new compile. Alternatively, start new compile as
  (define-key org-mode-map [C-tab] nil)
  (define-key org-mode-map [M-up] nil)
  (define-key org-mode-map [M-down] nil)
+ (define-key org-mode-map [S-up] nil)
+ (define-key org-mode-map [S-down] nil)
  (define-key org-mode-map (kbd "C-,") nil)
  (auto-fill-mode 1)
  (setq-local case-fold-search t)
@@ -919,6 +930,12 @@ and starts new compile. Alternatively, start new compile as
 (setq visible-bell t)
 (fringe-mode 0)
 (add-hook 'after-save-hook 'executable-make-buffer-file-executable-if-script-p)
+(defun vg-before-save ()
+ (when (string-match "[.]yml$" buffer-file-name)
+  (untabify 0 (point-max))
+  (vg-message "Untabified %s" buffer-file-name)))
+(add-hook 'before-save-hook 'vg-before-save)
+
 ;; remove git info from mode line
 (defun vc-refresh-state () "Disable"
 	   (vg-message "vc-refresh-state disabled"))

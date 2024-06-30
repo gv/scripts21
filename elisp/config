@@ -1,0 +1,40 @@
+# Filter out: no speech, foreign languages, synthesized speech
+# Warning: bad var names are silently ignored + probably assigned empty string
+# (comparing nonexistent variable to a string makes all blocking filter)
+--match-filter 
+  "uploader != 'arisaif' &
+  uploader != 'Bo Qian' &
+  uploader != 'CalQuan India' &
+  uploader != 'CodeHelp - by Babbar' &
+  uploader != 'CodeVault' &
+  uploader != 'CppNuts' &
+  uploader != 'emanuel Kantbronce' &
+  uploader != 'HindiSiksha' &
+  uploader != 'golang' &
+  uploader != 'Khaila Gonzales' &
+  uploader != 'Foo So' &
+  uploader != 'Neso Academy' &
+  uploader != 'NoTalkTech' &
+  uploader != 'Paras' &
+  uploader != 'Praveen Kumar' &
+  uploader != '코드없는 프로그래밍' &
+  uploader != 'Toyo Tires Canada' & 
+  uploader != 'The CS Study Hindi' &
+  uploader != 'Goparism' &
+  uploader != 'FREE4ARAB | Information Technology' &
+  uploader != 'Monteszenet' &
+  uploader != 'CodeGPT' &
+  uploader != 'Khôi Trần' &
+  uploader != 'johnnashcz' &	
+  uploader != 'Manny N - Topic' &
+  uploader != 'Heap Corruption - Topic' &
+  uploader != 'Informatica Support' &
+  uploader != 'Roel Van de Paar' &	
+  uploader != 'A To Z Hacks' &
+  uploader != 'Quick Notepad Tutorial' &
+  uploader != 'Diverter NoKYC' &
+  uploader != 'News Source Crawler' &
+  uploader != 'hey delphi' &
+  uploader != 'CSE Practicals' &
+  uploader != 'hazel1611' &
+  uploader != 'AlaskaLinuxUser AKLU'"
