@@ -286,14 +286,15 @@
 and starts new compile. Alternatively, start new compile as
 *compilation-ID*")
 
-;; Another key from Norton Commander
-;; TODO Doesn't work
-(define-key global-map [(control return)] 'vg-insert-current-file-path)
 (defun vg-insert-current-file-path () (interactive)
  (insert
   (with-current-buffer (window-buffer (minibuffer-selected-window))
    (or buffer-file-name default-directory))))
+(put 'vg-insert-current-file-path 'delete-selection t)
 (define-key global-map (kbd "C-'") 'vg-insert-current-file-path)
+;; Another key from Norton Commander
+;; TODO Doesn't work
+(define-key global-map [(control return)] 'vg-insert-current-file-path)
 
 ;; XFCE overrides Alt-F7, also Alt-F1 F2 etc.
 (global-set-key [M-f7]  'find-name-dired) 
@@ -412,7 +413,24 @@ and starts new compile. Alternatively, start new compile as
    "https://www.youtube.com/results?search_query=%s"
    " -\"hey delphi\"\
   -\"Roel Van de Paar\" -iluvatar1 -\"A To Z Hacks\" -\"Quick Notepad\
-  Tutorial\" -\"Diverter NoKYC\" -\"News Source Crawler\"")))
+  Tutorial\" -\"Luke Chaffey\" -\"News Source Crawler\"")))
+
+(defun vg-dl () (interactive)
+ (let* ((q (Vg-get-query-from-current-line))
+		(nq (replace-regexp-in-string " +" "-"
+			 (string-trim (replace-regexp-in-string "[^A-Za-z0-9]+"
+						   " " q))))
+		(name (concat (format-time-string "%Y%m%d-") nq)))
+  (unless (file-directory-p name)
+   (make-directory-internal name))
+  (compilation-start
+   ;; No quotes should be needed for dirname
+   (format "cd %s && df -h . && y3\
+ https://www.youtube.com/results?search_query=%s" name
+	(url-hexify-string q))
+   'compilation-mode
+   (lambda (&rest _) "*youtube-dl*"))))
+(define-key global-map [s-f5] 'vg-dl)
 
 (define-key global-map [s-f4]
  (lambda () (interactive)
@@ -429,6 +447,10 @@ and starts new compile. Alternatively, start new compile as
 (defun google-line () (interactive)
  (Vg-search-current-line "https://www.google.com/search?q=%s"))
 
+(defun Vg-get-query-from-current-line ()
+ (string-trim (replace-regexp-in-string "[[] []]\\|Q:" ""
+  (Vg-get-current-line-escaped))))
+
 (defun Vg-search-current-line (tmpl &optional suffix)
  (if (use-region-p)
   (Vg-search-at-point tmpl)
@@ -436,10 +458,7 @@ and starts new compile. Alternatively, start new compile as
    (format tmpl
 	(url-hexify-string
 	 (string-trim
-	  (concat 
-	   (replace-regexp-in-string "[[] []]\\|Q:" ""
-		(Vg-get-current-line-escaped))
-	   suffix)))))))
+	  (concat (Vg-get-query-from-current-line) suffix)))))))
 
 (defun gscholar-line () (interactive)
  (Vg-search-current-line "https://scholar.google.com/scholar?q=%s"))
@@ -613,7 +632,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'shell-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
- (Vg-classify-as-punctuation "+$/")
+ (Vg-classify-as-punctuation "+$/'")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -670,7 +689,9 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'compilation-start-hook 'Vg-tune-compilation)
 
 (defun tracker-search () (interactive)
- (let ((cmd (read-shell-command "Command: "
+ ;; Won't run if cwd is deleted
+ (let ((default-directory "/")
+	   (cmd (read-shell-command "Command: "
 			 (concat
 			  (if (equal window-system 'ns)
 			   "mdfind "
@@ -870,7 +891,9 @@ and starts new compile. Alternatively, start new compile as
    (if (use-region-p)
 	(buffer-substring-no-properties (region-beginning) (region-end))
 	(Vg-get-current-line-escaped))))
- (save-buffer)
+ (condition-case err
+  (save-buffer)
+  (error (vg-message (error-message-string err))))
  (command-execute 'compile))
 
 (defun g1 () "Show last commit" (interactive)
@@ -961,4 +984,4 @@ and starts new compile. Alternatively, start new compile as
 (split-window-right)
 (recentf-open-files)
 (vg-message
- "tab-width=%s case-fold-search=%s" tab-width case-fold-search)
+ "Path='%s' tab-width=%s" load-file-name tab-width)
