@@ -17,7 +17,7 @@ NAME_GLOB*: BP on every symbol with full name matching NAME_GLOB*
  For available calls & vars see source
 
 Examples:
-trace.py\
+./trace.py\
  'RTFTagWriter::*ElementImpl*#icu($$rsi)'\
  '~RTFStreamWriter::OpenBlock#"OB %s" % levelIn(1)'\
  '~RTFStreamWriter::CloseBlock#"CB %s" % levelOut(1)'\
@@ -28,7 +28,8 @@ When OpenBlock/CloseBlock are called, count and print current block depth.
 Limit stack printout to 2 frames, duplicate output to /win/kodeks/rtf2.logc, 
 print paths relative to /win/kodeks.
 
-trace.py --launch "/kabata/a2-docker/kdb --no-reg /home/vg/email.ks"\
+./trace.py --launch
+ "~/a2-docker/kdb --no-reg ~/email.ks"\
  u_strToPunycode_66'#u16($$rdi, $$rsi)'
 
 ... TODO
@@ -226,7 +227,7 @@ class TracePoint(Util):
 			raise Exception("No function '%s'" % name)
 		return f.addr.GetLoadAddress(target)
 
-	def getAddrs(self, target, process):
+	def getAddrs(self, target, process, check=False):
 		if self.addr:
 			return [self.addr]
 		if not self.nameIsFull:
@@ -236,13 +237,20 @@ class TracePoint(Util):
 			return [self.getAddrOf(self.symbolName, target)]
 		# Can't use `yield` here, lldb will break
 		addrs = []
+		mc = sc = 0
 		for m in target.modules:
+			mc += 1
 			for s in m:
 				if not s.name:
 					continue
+				sc += 1
 				if fnmatch.fnmatch(s.name.split("(")[0],
 								   self.symbolName):
 					addrs.append(s.addr.GetLoadAddress(target))
+		if check and not addrs:
+			raise Exception(
+				"No addrs for '%s', searched %s symbols in %s modules" % (
+					self.symbolName, sc, mc))
 		return addrs
 
 	def filterAccepts(self, frame, toolProc):
@@ -294,14 +302,14 @@ class NamedTracePoint(TracePoint):
 			self.symbolName = name
 		return self
 
-	def getAddrs(self, target, process):
+	def getAddrs(self, target, process, check=False):
 		if self.addr:
 			return [self.addr]
 		if self.filename or not self.nameIsFull:
 			return [None]
 		func = self.getFunc(self.symbolName, target)
 		if not self.calls:
-			return TracePoint.getAddrs(self, target, process)
+			return TracePoint.getAddrs(self, target, process, check)
 		addrs = []
 		availableCalls = set()
 		instructions = func.GetInstructions(target)
@@ -472,7 +480,7 @@ size=64 name=icu_66::UnicodeString
 			for cmd in self.commands:
 				c2 = self.substCommand(frame, cmd)
 				stackSize = ""
-				if 1 or toolProc.options.slen is 0:
+				if 1 or toolProc.options.slen == 0:
 					stackSize = "\u2193%d" % (
 						frame.thread.GetNumFrames())
 				toolProc.write("%s%d%s %s= " % (
@@ -674,6 +682,11 @@ class Count:
 
 class Process(Util):
 	objects = {}
+
+	def enableLog(self, category, channels):
+		# Doesn't check 2nd parameter, 1st is checked
+		if not self.debugger.EnableLog(category, channels):
+			raise Exception("Bad log %s" % category)
 	
 	def __init__(self, options):
 		self.options = options
@@ -685,8 +698,9 @@ class Process(Util):
 		self.printImage = False
 		self.count = Count()
 		if self.options.verbose:
-			if not self.debugger.EnableLog("lldb", ["dyld", "target"]):
-				raise Exception("Bad log")
+			self.enableLog(
+					"lldb", ["dyld", "target", "zzzz"])
+			self.enableLog( "gdb-remote", ["packets"])
 		self.tasksBySp = {}
 		self.fltMap = {}
 		self.filterNames = set()
@@ -714,8 +728,10 @@ class Process(Util):
 		self.tasksBySp[sp] = task
 
 	def load(self, pid=None, launch=None):
+		self.launch = launch
 		self.target = self.check(self.debugger.CreateTarget(
 			launch and launch[0] or "", "", "", True, self.error))
+		print(launch)
 		if launch:
 			sys.stderr.write("Launching %s..." % launch)
 			self.process = self.check(self.target.Launch(
@@ -724,15 +740,21 @@ class Process(Util):
 				None, None, # env stdin
 				# TODO Don't see output anyway
 				"/dev/stderr", "/dev/stderr", os.getcwd(),
-				0, True, self.error));
+				0, True, self.error))
 		elif re.match(r"\d+", pid):
 			ai = lldb.SBAttachInfo(int(pid))
-			sys.stderr.write("Attaching pid=%d..." % ai.GetProcessID())
+			sys.stderr.write(
+				"Attaching pid=%d..." % ai.GetProcessID())
 		else:
+			self.process = self.check(self.target.ConnectRemote(
+				self.debugger.GetListener(),
+				pid, "gdb-remote", self.error))
+		if 0:
 			ai = lldb.SBAttachInfo(pid, self.options.wait)
 			sys.stderr.write("Attaching name='%s'..." % pid)
-		if not launch:
-			self.process = self.check(self.target.Attach(ai, self.error))
+		if not hasattr(self, "process") and not launch:
+			self.process = self.check(self.target.Attach(
+				ai, self.error))
 		sys.stderr.write("DONE state=%d\n" % self.process.GetState())
 		self.listener = self.debugger.GetListener()
 		self.process.GetBroadcaster().AddListener(
@@ -748,6 +770,11 @@ class Process(Util):
 		return self
 
 	def unload(self):
+		if self.launch:
+			print("Killing %s %s..." % (
+				self.launch, self.process.GetProcessID()))
+			r = os.kill(self.process.GetProcessID(), 9)
+			print("r=%s" % r)
 		sys.stderr.write("Detaching %s..." % self.process)
 		self.error = self.process.Detach()
 		if not self.error.success:
@@ -850,13 +877,13 @@ class Process(Util):
 					dbp.SetEnabled(True)
 
 	def setBp(self, t):
-		b = self.setBpIfExists(t)
+		b = self.setBpIfExists(t, True)
 		if b:
 			raise Exception("No locations for BP %s" % b)
 
-	def setBpIfExists(self, t):
+	def setBpIfExists(self, t, check=False):
 		id = t.getId()
-		addrs = t.getAddrs(self.target, self.process)
+		addrs = t.getAddrs(self.target, self.process, check)
 		if addrs:
 			for addr in addrs:
 				self.addBpForAddr(t, addr)
@@ -1069,6 +1096,7 @@ class Tool:
 			else:
 				self.traceAll(process, functions)
 		finally:
+			# Get segfault if I don't do that
 			process.unload()
 
 	def traceAll(self, process, functions):

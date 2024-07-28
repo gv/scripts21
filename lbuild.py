@@ -5,9 +5,7 @@ import sys, os, argparse, subprocess, datetime, shutil, errno, re,\
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-	"--gprof", action="store_true", help="Compile with -pg")
-parser.add_argument(
-	"--asan", action="store_true", help="Compile with ASAN")
+	"--cflags", "-f", help="Compiler flags")
 parser.add_argument(
 	"--command", "-c", action="store_true", help="Run command")
 parser.add_argument(
@@ -36,10 +34,9 @@ class Paths:
 			dir = os.path.join(prefix, name.split(".")[0])
 		else:
 			dir = build.getConf("dir", ".")
-		if args.gprof:
-			dir += ".gprof"
-		if args.asan:
-			dir += ".asan"
+		if build.flags:
+			# first is "-"
+			dir += re.sub(" +", "", build.flags) 
 		self.build = os.path.join(self.base, dir)
 		self.log = os.path.join(self.base, self.logName)
 		
@@ -123,7 +120,8 @@ class Input:
 
 	def describeTime(self):
 		f = datetime.datetime.now() - self.takeoff
-		return "%02d\uFE55%02d\uFE55%02d" % (
+		# return "%02d\uFE55%02d\uFE55%02d" % (
+		return "%02d%02d%02d" % (
 			f.seconds / 3600, f.seconds / 60 % 60,
 			f.seconds % 60)
 
@@ -163,8 +161,6 @@ class Build:
 			self.env = dict(os.environ)
 			self.env["PATH"] = "%s:%s" % (
 				os.path.dirname(__file__), self.env["PATH"])
-			if self.args.gprof:
-				self.env["CXXFLAGS"] = self.env["CFLAGS"] = "-lkjhg"
 		else:
 			self.env = dict(os.environ)
 			toolbase = os.path.dirname(os.path.dirname(sys.executable))
@@ -175,6 +171,9 @@ class Build:
 				os.path.dirname(self.getGit()),
 				self.env["PATH"]])
 		self.pconf = conf.get(self.platform, {})
+		self.flags = None
+		if self.args.cflags:
+			self.flags = re.sub(",+", " ", self.args.cflags).strip()
 		self.paths = Paths(self, base, self.args)
 		self.saved = Count("saved")
 
@@ -251,8 +250,8 @@ class Build:
 		self.copy(self.paths.log, os.path.join(save, self.paths.logName))
 		for n in self.pconf["files"]:
 			a = self.paths.artefact(n)
-			self.copy(a, os.path.join(save, "%s-%s" % (
-				self.getName(), n)))
+			self.copy(a, os.path.join(save, "%s%s-%s" % (
+				self.getName(), re.sub(" +", "", self.flags), n)))
 
 	def copy(self, a, b):
 		size = os.stat(a).st_size
@@ -276,11 +275,6 @@ class Build:
 			return ["make", "CXXLD=g++ -Wl,-Map,$@.map"]
 		here = os.path.dirname(os.path.realpath(__file__))
 		arg = arg.replace("$here", here)
-		if self.args.asan:
-			if "-DCMAKE_BUILD_TYPE=RelWithDebInfo" == arg:
-				return [
-					arg,
-					"-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-fsanitize=address -static-libasan"]
 		return [arg]
 
 	def logBuildCommands(self, log):
@@ -288,9 +282,13 @@ class Build:
 			if hasattr(cmd, "split"):
 				cmd = cmd.split(" ")
 			cmd = sum([self.expand(a) for a in cmd], [])
+			if "cmake" == cmd[0] and "--build" != cmd[1] and self.flags:
+				cmd += [
+					"-DCMAKE_CXX_FLAGS=%s" % self.flags,
+					"-DCMAKE_C_FLAGS=%s" % self.flags]
 			prefix = self.getConf("cmdPrefix")
 			if prefix:
-				self.bl.prefix = prefix
+				self.bl.prefix = "nice ionice -n7".split(" ") + prefix
 			elif "win32" != self.platform:
 				dockerImage = self.getConf("docker")
 				if dockerImage:
@@ -309,8 +307,6 @@ class Build:
 						"-u", str(os.getuid()),
 						"-w", build,
 						"-e", f"HOME={build}",
-						"-e",
-						"ASAN_OPTIONS=new_delete_type_mismatch=0,detect_leaks=0,help=1",
 						"-t", dockerImage,
 						"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)

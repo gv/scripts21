@@ -1,4 +1,7 @@
 #!/bin/bash -e
+# Run etags on all sources in directory + load tags into emacs
+# Indexing is done in small portions so we know it didn't freeze
+#
 set -o pipefail
 list() {
   if [ $# == 0 ]; then
@@ -28,7 +31,7 @@ list "$@"| egrep -v $tests|\
 	   --regex '/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
 	   --regex '/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
 	   --regex '/.*[. ]\(\w+\) = function/\1/'
-# Add only file names for tests (might be empty)
+# Add only file paths for tests (might be empty)
 list "$@"| egrep $tests| time nice xargs -n999 -t etags -a --language=none || true
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS
 # xz doesn't work on Mac. Also, mb better results:

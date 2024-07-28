@@ -85,11 +85,12 @@ $become $smbd -p $port --foreground --no-process-group $f\
 		--configfile="$conf" "$@" &
 if [ -n "$ssh" ]; then
   # TODO: uid=$(whoami) should be evaluated on the remote machine
-  ssh -R $port:localhost:$port "$target" -t\
+  ${SSH-ssh} -R $port:localhost:$port "$target" -t\
 	  "set -x; mkdir -p $name &&"\
 	  "sudo mount.cifs //localhost/$name $name -o"\
 	  soft,port=$port,user=$user,password=$password',uid=$(whoami) &&'\
-	  "bash; sudo umount $name"
+	  "bash; sudo umount $name" || true
+  echo "Killing smbd..."
   pkill -P $$
   wait
 else

@@ -611,8 +611,8 @@ and starts new compile. Alternatively, start new compile as
    indent-tabs-mode t
    py-indent-tabs-mode t
    tab-width 2
-   python-indent-offset 2
-   ))
+   python-indent-offset 2)
+ (vg-message "python-indent-offset=%d" python-indent-offset))
 (add-hook 'python-mode-hook 'vg-tune-py)
 
 (add-hook 'python-mode-hook 'compact-blame-mode)

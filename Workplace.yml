@@ -4,6 +4,7 @@
   hosts: all, localhost
   tasks:
   - name: Bash aliases, terminal deprioritization
+    tags: user
     blockinfile: 
       path: ~/.bashrc
       backup: yes
@@ -14,10 +15,24 @@
         test -n "$COLORTERM" && renice +12 $$ && ionice -c3 -n7 -p $$
         alias 2e=~/stuff/2emacs.py
         alias inh="systemd-inhibit --what=handle-lid-switch"
-        alias inhj="systemd-inhibit --what=handle-lid-switch journalctl -f"
-        alias d3='docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
-        alias yd='python2 ~/src/youtube-dl/youtube_dl/__main__.py'
+        alias inhj="inh journalctl -f"
+        alias g3="git stash && git pull --rebase && git stash apply"
+        alias d3='docker run --rm -v $(pwd):$(pwd) -w $(pwd)'
+        alias d3i='inh docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
+        alias y0="python2 ~/src/youtube-dl/youtube_dl/__main__.py"
+        alias yd='y0 --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias iy='inh python2 \
+        ~/src/youtube-dl/youtube_dl/__main__.py \
+        --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias yp='python3 ~/src/yt-dlp/yt_dlp/__main__.py'
+        alias y3='yp --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias yp9='python3.9 ~/src/yt-dlp/yt_dlp/__main__.py'
+        alias y9='yp9 --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias 12='scl enable gcc-toolset-12'
+        alias 13='scl enable gcc-toolset-13'
+      
   - name: Disable ssh password
+    tags: system, never
     become: true
     lineinfile:
       validate: 'sshd -t -f %s'
@@ -26,6 +41,7 @@
       line: 'PasswordAuthentication no'
       
 - name: Some actions for a server account
+  tags: user, server
   hosts: all
   tasks:
   - name: authorized_keys

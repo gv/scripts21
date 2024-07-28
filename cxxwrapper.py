@@ -19,4 +19,4 @@ if not "-c" in sys.argv:
         args.append(m)
     except ValueError:
         pass
-os.execvp("g++", ["g++"] + args)
+os.execvp("g++", ["g++", "-H"] + args)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import print_function
 "LLDB commands to get stuff from crash dumps"
-import argparse, re, os, sys, time, subprocess
+import argparse, re, os, sys, time, subprocess, struct
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("DMPFILE", help="Path to core file", nargs="*")
@@ -137,6 +137,169 @@ class Util:
 
 class SymbolNotOnServer(Exception):
 	pass
+
+class CallSite:
+	def __init__(self, target):
+		self.target = target
+		self.error = target.error
+		self.sbt = target.target
+		self.sbp = target.process
+		self.args = target.args
+		
+	def loadTopOfStack(self, thread, stack):
+		self.stack = stack
+		self.pc = thread.frames[0].pc
+		self.sp = thread.frames[0].sp
+		self.source = "PC"
+		return self
+	
+	def loadReturnAddress(self, loc, stack):
+		# After call SP points at return address
+		# We need SP before call
+		self.stack = stack
+		self.source = self.descStackPtr(loc)
+		self.pc = self.target.check(
+			self.sbp.ReadPointerFromMemory(loc, self.error))
+		self.sp = loc + ptrSize
+		return self
+
+	def descStackPtr(self, ptr):
+		return "S-%x" % (self.stack.GetRegionEnd() - ptr)
+
+	def findCaller(self):
+		class Count:
+			def __init__(self):
+				self.words = self.calls = self.destinations = 0
+				self.pointers = self.readable = 0
+		self.count = Count()
+		pc = lldb.SBAddress(self.pc, self.sbt)
+		self.insns = pc.symbol.IsValid() and\
+			self.target.getFuncInstructions(pc)
+		if self.insns:
+			self.pushCount, self.spDecrement =\
+				self.target.getPushCountAndStackDecrement(self.insns)
+			self.returnAddrLocation =\
+				self.sp + (ptrSize*self.pushCount) + self.spDecrement
+			self.loadCallerInstrs(self.returnAddrLocation)
+		else:
+			print(
+				"  Instructions unreadable. Starting search for return address...")
+			self.pushCount = self.spDecrement = None
+			reg = lldb.SBMemoryRegionInfo()
+			check(self.target.process.GetMemoryRegionInfo(self.sp, reg))
+			# If nothing pushed, return address can be located @ sp
+			for pretaddrl in range(self.sp, reg.GetRegionEnd(), ptrSize):
+				self.count.words += 1
+				call = self.loadCallerInstrs(pretaddrl)
+				if not call:
+					continue
+				self.count.calls += 1
+				if not call.destination:
+					continue
+				self.count.destinations += 1
+				# We're looking for the call to an unloaded module
+				# Therefore it must be call to .plt
+				if call.destination:
+					da = self.sbt.ResolveLoadAddress(call.destination)
+					if da.section.name == ".text":
+						if 0:
+							print("Skip:")
+							for inn in self.callerInstrs:
+								self.target.printInstruction(inn, True)
+						self.callerInstrs = None
+						continue
+				self.returnAddrLocation = pretaddrl
+				break
+		return self
+
+	def getReturnAddrLoc(self):
+		self.findCaller()
+		if self.insns:
+			if self.args.disassembly:
+				for inn in self.insns:
+					self.target.printInstruction(inn)
+			sys.stdout.write("  %d push, %d sub, prev pc @ %s\n" % (
+				self.pushCount, self.spDecrement,
+				xx(self.returnAddrLocation)))
+		else:
+			sys.stdout.write(
+				"  Tried %d words, %d -> a section, %d readable, %d calls, %d destinations\n" % (
+					self.count.words, self.count.pointers,
+					self.count.readable, self.count.calls,
+					self.count.destinations))
+		for inn in self.callerInstrs:
+			self.target.printInstruction(inn, True)
+		return self.returnAddrLocation
+
+	def loadCallerInstrs(self, pretaddrl):
+		self.callerInstrs = []
+		ra0 = self.target.check(self.sbp.ReadPointerFromMemory(
+			pretaddrl, self.target.error))
+		ra = lldb.SBAddress(ra0, self.sbt)
+		if not ra.section.IsValid():
+			# print("%s: %s no section" % (xx(pretaddrl), xx(ra0)))
+			return
+		self.count.pointers += 1
+		if ra.section.file_size == 0:
+			# print("%s: %s no image" % (xx(pretaddrl), xx(ra0)))
+			return
+		self.count.readable += 1
+		if ra.offset == 0:
+			return
+		ibufoff = max(ra.offset - 100, 0)
+		# If that's a real return address, there must be call
+		# instruction before that. It can be 5, 3 or 2 bytes.
+		bytes = ra.section.GetSectionData().ReadRawData(
+			self.error, ibufoff, ra.offset - ibufoff)
+		ibuf = lldb.SBAddress(ra.section, ibufoff)
+		if self.error.fail:
+			raise Exception("%s @ %s %s %s section size = %s" % (
+				self.error, self.target.getName(ra.module),
+				xx(self.sbt.GetLoadAddress(ibuf)),
+				self.describeAddr(ibuf), ra.section.file_size))
+		call = self.getCall(bytes, ra0)
+		if call:
+			cia = lldb.SBAddress(ra0 - len(call.ibs), self.sbt)
+			self.callerInstrs = self.sbt.GetInstructions(cia, call.ibs)
+		return call
+		
+	def getCall(self, bytes, end):
+		class Call:
+			def __init__(self, ibs):
+				self.ibs = ibs
+		if len(bytes) >= 5 and bytes[-5] == 0xe8:
+			call = Call(bytes[-5:])
+			call.destination = struct.unpack("i", bytes[-4:])[0] + end
+			return call
+		if bytes[-3] == 0xff:
+			call = Call(bytes[-3:])
+			call.destination = None
+			return call
+		print("  Unknown instr %x %x %x %x %x" % (
+			bytes[-5], bytes[-4], bytes[-3], bytes[-2], bytes[-1]))
+		return False
+
+	def describeAddr(self, addr):
+		off = addr.offset - addr.symbol.addr.offset
+		desc = "Indescribable"
+		if addr.symbol.IsValid():
+			desc = "%s+%d" % ( addr.symbol.name, off)
+		elif addr.section.IsValid():
+			desc = "sect %s+%s" % (addr.section.name, xx(addr.offset))
+			if ".module_image" == addr.section.name:
+				desc += " (buildId=%s)" % getId(addr.module, self.args.long)
+		elif addr.module.IsValid():
+			desc = addr.module.name
+		return desc
+	
+	def print(self):
+		pc = lldb.SBAddress(self.pc, self.sbt)
+		# sys.stdout.write("\u2666 %s: %s %s %s\n" % (
+		sys.stdout.write("%s: %s %s %s\n" % (
+			self.source, xx(self.pc), self.target.getName(pc.module),
+			self.describeAddr(pc)))
+		sys.stdout.flush()
+
 
 class Target(Util):
 	def __init__(self, args, debugger):
@@ -289,7 +452,7 @@ class Target(Util):
 
 	def printStacks(self):
 		for t in self.process.threads:
-			self.printDecodedFrames(t)
+			self.printWordsFromStack(t)
 
 	def printStackInfo(self, t):
 		sp = t.frames[0].sp
@@ -369,23 +532,28 @@ class Target(Util):
 					prevVals[v.name] = v.value
 		print("")
 
-	def printInstruction(self, ii):
+	def printInstruction(self, ii, needCode=False):
 		ibs = ""
-		if 0:
-			data = ii.GetData(self.target)
-			for i0 in range(ii.GetByteSize()):
-				bv = data.GetUnsignedInt8(self.error, i0)
-				if self.error.fail:
-					ibs += "%s " % self.error
-				else:
-					ibs += "%02X " % bv
+		data = ii.GetData(self.target)
+		bytes = self.check(
+			data.ReadRawData(self.error, 0, ii.GetByteSize()))
+		if needCode:
+			for bv in bytes:
+				ibs += "%02X " % bv
 		comment = ii.GetComment(self.target)
 		if comment:
 			comment = " ; " + comment
-		print(" %s %s%s %s%s" % (
-			xx(ii.addr.GetLoadAddress(self.target)), ibs, 
-			ii.GetMnemonic(self.target),
-			ii.GetOperands(self.target), comment))
+		name = ii.GetMnemonic(self.target)
+		ptr = ii.addr.GetLoadAddress(self.target)
+		print("  %s %s%s %s%s" % (
+			xx(ptr), ibs, name, ii.GetOperands(self.target), comment))
+		if "callq" == name:
+			call = CallSite.getCall(self, bytes, ptr + len(bytes))
+			if call.destination:
+				da = self.target.ResolveLoadAddress(call.destination)
+				print("  => %s %s %s %s" % (
+					xx(call.destination), self.getName(da.module),
+					CallSite.describeAddr(self, da), da.section.name))
 			
 	def getFuncInstructions(self, f):
 		# Doesn't work
@@ -408,6 +576,27 @@ class Target(Util):
 		return self.target.GetInstructions(f.symbol.addr, bytes)
 
 	def printWordsFromStack(self, n):
+		if type(n) is int:
+			t = self.process.GetThreadByIndexID(n)
+			if not t.IsValid():
+				raise Exception("No thread %d" % n)
+		else:
+			t = n
+		self.printStackInfo(t)
+		self.printRegs(t.frames[0], {})
+		stack = lldb.SBMemoryRegionInfo()
+		cs = CallSite(self).loadTopOfStack(t, stack)
+		check(self.process.GetMemoryRegionInfo(cs.sp, stack))
+		if self.args.threadm or self.args.threadX:
+			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
+				sp, stack.GetRegionEnd()))
+			return
+		while cs:
+			cs.print()
+			cs = CallSite(self).loadReturnAddress(
+				cs.getReturnAddrLoc(), stack)
+
+	def printWordsFromStack0(self, n):
 		if type(n) is int:
 			t = self.process.GetThreadByIndexID(n)
 			if not t.IsValid():
@@ -463,16 +652,9 @@ class Target(Util):
 		SP before that call = found PC address + ptrSize
 		"""
 		addr = lldb.SBAddress(p, self.target)
-		off = addr.offset - addr.symbol.addr.offset
-		desc = "Indescribable"
-		if addr.symbol.IsValid():
-			desc = "%s+%d" % ( addr.symbol.name, off)
-		elif addr.section.IsValid():
-			desc = "sect %s+%s" % (addr.section.name, xx(addr.offset))
-			if ".module_image" == addr.section.name:
-				desc += " (buildId=%s)" % getId(addr.module, self.args.long)
 		sys.stdout.write("%s%s %s %s" % (
-			prefix, xx(p), self.getName(addr.module), desc))
+			prefix, xx(p), self.getName(addr.module),
+			self.describeAddr(addr)))
 		sys.stdout.flush()
 		if self.args.base:
 			for s in self.getPossibleSourceLines(addr, " at %s:%d"):
@@ -500,7 +682,7 @@ class Target(Util):
 				# function. Lower SP values are closer to the top in the
 				# output, so the arrow should poit upwards
 				self.prevPc = pos+ptrSize+(npush*ptrSize)+sub
-				print("%d pushs + 0x%X SP\u2191, prev PC @ %s" % (
+				print("  %d pushs + 0x%X SP\u2191, prev PC @ %s" % (
 					npush, sub, xx(self.prevPc)))
 				sys.stdout.flush()
 		block = addr.block
@@ -539,8 +721,8 @@ class Target(Util):
 					elif not ops[0].startswith("$"):
 						sys.stdout.write("Non-constant sub SP: ")
 						self.printInstruction(ii)
-					else:
-						sub = int(ops[0][1:], base=0)
+						continue
+					sub += int(ops[0][1:], base=0)
 		return npush, sub
 
 	def getAscii(self, pos, size):
@@ -657,6 +839,13 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 					m.num_sections, fsize, justifyId(m, self.args.long),
 					xx(self.getSomeLoadAddress(m)), name,
 					self.getSymbolFileName(m)))
+				if fsize:
+					def printSec(prefix, sec):
+						print("%s%s" % (prefix, sec.name))
+						for i in range(sec.GetNumSubSections()):
+							printSec(prefix + " ", sec.GetSubSectionAtIndex(i))
+					for sec in m.sections:
+						printSec("  ", sec)
 		if self.args.stat:
 			if not hasattr(tool, "statHeaderPrinted"):
 				print(" modules: total, system, store, other, absent")
@@ -852,8 +1041,10 @@ class Tool(Util):
 			sys.stdout.flush()
 			# TODO Storage here is only 1 level, different from
 			# in the script above
-			cmd = "lldb -o 'settings set target.exec-search-paths %s'\
- -o 'target create --core %s'" % (self.args.storage, t.path)
+			cmd = "lldb %s-o 'target create --core %s'" % (
+				self.args.storage and (
+					"-o 'settings set target.exec-search-paths %s'" %
+					self.args.storage) or "", t.path)
 			for mo in t.target.modules:
 				if mo.GetSymbolFileSpec().IsValid():
 					if mo.GetSymbolFileSpec() != mo.file:
