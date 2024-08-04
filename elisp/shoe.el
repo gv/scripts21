@@ -167,6 +167,9 @@
 (define-key global-map (kbd "C-\\")
  (lambda () (interactive)
   (vg-message "Keyboard language switch disabled")))
+(define-key global-map [insert]
+ (lambda () (interactive)
+  (vg-message "Overwrite mode switch disabled")))
 (define-key global-map (kbd "s-g") 'google-at-point)
 (define-key global-map (kbd "s-b") 'end-of-buffer)
 (define-key global-map [f7] 'google-line)
@@ -204,6 +207,8 @@
 (define-key global-map (kbd "s-4")
  (lambda () (interactive) (switch-to-buffer "*compilation*")))
 (define-key global-map (kbd "s-5")
+ (lambda () (interactive) (find-file "~")))
+(define-key global-map (kbd "C-1")
  (lambda () (interactive) (find-file "~")))
 (define-key global-map (kbd "s-8")
  (lambda () (interactive)
@@ -292,6 +297,7 @@ and starts new compile. Alternatively, start new compile as
    (or buffer-file-name default-directory))))
 (put 'vg-insert-current-file-path 'delete-selection t)
 (define-key global-map (kbd "C-'") 'vg-insert-current-file-path)
+(define-key global-map (kbd "s-`") 'vg-insert-current-file-path)
 ;; Another key from Norton Commander
 ;; TODO Doesn't work
 (define-key global-map [(control return)] 'vg-insert-current-file-path)
@@ -425,11 +431,11 @@ and starts new compile. Alternatively, start new compile as
    (make-directory-internal name))
   (compilation-start
    ;; No quotes should be needed for dirname
-   (format "cd %s && df -h . && y3\
+   ;; The URL works better than 'ytsearch:xyz'
+   (format "cd %s && df -h . && y9\
  https://www.youtube.com/results?search_query=%s" name
 	(url-hexify-string q))
-   'compilation-mode
-   (lambda (&rest _) "*youtube-dl*"))))
+   'compilation-mode (lambda (&rest _) "*youtube-dl*"))))
 (define-key global-map [s-f5] 'vg-dl)
 
 (define-key global-map [s-f4]
@@ -683,6 +689,7 @@ and starts new compile. Alternatively, start new compile as
  (define-key compilation-mode-map "l" 'vg-load-url-editor)
  (define-key compilation-mode-map "f" 'vg-firefox-url)
  (define-key compilation-mode-map "e" 'vg-open-url-evince)
+ (define-key compilation-mode-map [delete] 'kill-compilation)
  (highlight-regexp Vg-url-pattern)
  ;; Highlight debug print
  (highlight-regexp "\\bvg:.*$" 'hi-green))

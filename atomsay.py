@@ -95,7 +95,9 @@ class Item:
 			mm = [x[0:32] for x in getAllPossibleSubstitutions(
 				re.sub(r"(?u)[^\w]+", "_", self.title),
 				getattr(args, "subst", []))]
-		return ["%s-%04d-%02d-%02d-%s" % (
+		return ["%04d%02d%02d-%s" % (
+			self.date.year, self.date.month, self.date.day, m)
+			for m in mm] + ["%s-%04d-%02d-%02d-%s" % (
 			prefix, self.date.year, self.date.month, self.date.day, m)
 			for m in mm] + self.getNames_v1(args)
 
