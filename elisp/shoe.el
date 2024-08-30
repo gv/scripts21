@@ -979,7 +979,7 @@ and starts new compile. Alternatively, start new compile as
 (defun vc-refresh-state () "Disable"
 	   (vg-message "vc-refresh-state disabled"))
 (defun vc-after-save () "Disable"
-	   (vg-message "Wrote %s (vc-after-save disabled)" buffer-file-name))
+	   (vg-message "Wrote %s (vc-after-save disabled) %d characters" buffer-file-name (buffer-size)))
 (setq fast-but-imprecise-scrolling t)
 (require 'grep)
 (grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
