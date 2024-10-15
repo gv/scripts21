@@ -174,7 +174,7 @@ class CallSite:
 		self.count = Count()
 		pc = lldb.SBAddress(self.pc, self.sbt)
 		self.insns = pc.symbol.IsValid() and\
-			self.target.getFuncInstructions(pc)
+			self.target.getFuncInstructions(pc, self.pc)
 		if self.insns:
 			self.pushCount, self.spDecrement =\
 				self.target.getPushCountAndStackDecrement(self.insns)
@@ -344,7 +344,10 @@ class Target(Util):
 			pdb = m.file.fullpath + ".pdb"
 			if not os.path.isfile(pdb):
 				self.verb("No symbol file '%s'" % pdb)
-				continue
+				pdb = m.file.basename + ".pdb"
+				if not os.path.isfile(pdb):
+					self.verb("No symbol file '%s'" % pdb)
+					continue
 			if 0 and\
 			   not m.file.fullpath.startswith(self.args.storage) and\
 			   not m.file.fullpath.startswith(self.storagePath):
@@ -555,24 +558,30 @@ class Target(Util):
 					xx(call.destination), self.getName(da.module),
 					CallSite.describeAddr(self, da), da.section.name))
 			
-	def getFuncInstructions(self, f):
+	def getFuncInstructions(self, f, pc):
 		# Doesn't work
 		# insns = f.function.GetInstructions(self.target)
 		# also: symbol.GetInstructions
 		size = f.symbol.end_addr.GetOffset() - f.symbol.addr.GetOffset()
-		fpos = f.symbol.IsValid() and\
-			f.symbol.addr.GetLoadAddress(self.target)
+		secBase = pc - f.offset
+		#fpos = f.symbol.IsValid() and\
+		#	f.symbol.addr.GetLoadAddress(self.target)
+		fpos = secBase + f.symbol.addr.offset
+		if not f.symbol.addr.IsValid():
+			print("Addr not valid on %s" % f.symbol)
 		if not fpos or not size:
 			return
 		bytes = f.symbol.addr.section.GetSectionData().\
 			ReadRawData(self.error, f.symbol.addr.offset, size)
-		#bytes = self.process.ReadMemory(fpos, size, self.error)
 		if self.error.fail:
-			print("Error reading memory %s size=%s (%s:%s) = '%s'" % (
-				xx(fpos), xx(size),
-				f.symbol.addr.section.name,
-				xx(f.symbol.addr.offset), self.error))
-			return
+			bytes = self.process.ReadMemory(fpos, size, self.error)
+			if self.error.fail:
+				print("Error reading memory %s size=%s (%s %s(=%s):%s) = '%s'" % (
+					xx(fpos), xx(size),
+					f.symbol, f.symbol.addr.section.name,
+					f.symbol.addr.section.GetLoadAddress(self.target),
+					xx(f.symbol.addr.offset), self.error))
+				return
 		return self.target.GetInstructions(f.symbol.addr, bytes)
 
 	def printWordsFromStack(self, n):
@@ -589,7 +598,7 @@ class Target(Util):
 		check(self.process.GetMemoryRegionInfo(cs.sp, stack))
 		if self.args.threadm or self.args.threadX:
 			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
-				sp, stack.GetRegionEnd()))
+				cs.sp, stack.GetRegionEnd()))
 			return
 		while cs:
 			cs.print()
@@ -839,13 +848,22 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 					m.num_sections, fsize, justifyId(m, self.args.long),
 					xx(self.getSomeLoadAddress(m)), name,
 					self.getSymbolFileName(m)))
-				if fsize:
+				if m.GetUUIDString():
+					print(
+						"curl -L https://debuginfod.debian.net/buildid/%s/debuginfo  -o %s.pdb" % (
+#						"curl -L https://debuginfod.ubuntu.com/buildid/%s/debuginfo -o %s.pdb" % (
+							getId(m, True).lower(), m.file.basename))
+				if fsize and 0:
 					def printSec(prefix, sec):
 						print("%s%s" % (prefix, sec.name))
 						for i in range(sec.GetNumSubSections()):
 							printSec(prefix + " ", sec.GetSubSectionAtIndex(i))
 					for sec in m.sections:
 						printSec("  ", sec)
+		if 1:
+			print("gdb -ex 'set sysroot %s' %s %s" % (
+				os.path.dirname(self.target.executable.fullpath),
+				self.target.executable, self.path))
 		if self.args.stat:
 			if not hasattr(tool, "statHeaderPrinted"):
 				print(" modules: total, system, store, other, absent")
@@ -861,8 +879,14 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 
 	def getSomeLoadAddress(self, m):
 		for s in m.sections:
+			for i in range(s.GetNumSubSections()):
+				ss = s.GetSubSectionAtIndex(i)
+				if ss.GetLoadAddress(self.target) != 0xFFFFFFFFFFFFFFFF:
+					return s.GetLoadAddress(self.target)
+				print("Invalid load address for '%s'" % (ss.name))
 			if s.GetLoadAddress(self.target) != 0xFFFFFFFFFFFFFFFF:
 				break
+			print("Invalid load address for  '%s'" % (s.name))
 		return s.GetLoadAddress(self.target)
 
 	def getTime(self):
