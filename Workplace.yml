@@ -13,21 +13,24 @@
       validate: bash -x %s
       block: |
         test -n "$COLORTERM" && renice +12 $$ && ionice -c3 -n7 -p $$
+        shopt -s autocd
         alias 2e=~/stuff/2emacs.py
         alias inh="systemd-inhibit --what=handle-lid-switch"
         alias inhj="inh journalctl -f"
-        alias g3="git stash && git pull --rebase && git stash apply"
+        alias g3="bash -ecx 'git stash && git pull --rebase && git stash apply'"
         alias d3='docker run --rm -v $(pwd):$(pwd) -w $(pwd)'
+        alias d4='d3 -u $(id -u)'
         alias d3i='inh docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
+        vgYtdlFlags="--output \
+        \"%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s\""
         alias y0="python2 ~/src/youtube-dl/youtube_dl/__main__.py"
-        alias yd='y0 --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
-        alias iy='inh python2 \
-        ~/src/youtube-dl/youtube_dl/__main__.py \
-        --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias yd="y0 $vgYtdlFlags"
+        alias iy="inh python2\
+        ~/src/youtube-dl/youtube_dl/__main__.py $vgYtdlFlags"
         alias yp='python3 ~/src/yt-dlp/yt_dlp/__main__.py'
-        alias y3='yp --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias y3="yp $vgYtdlFlags"
         alias yp9='python3.9 ~/src/yt-dlp/yt_dlp/__main__.py'
-        alias y9='yp9 --output "%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s"'
+        alias y9="yp9 $vgYtdlFlags"
         alias 12='scl enable gcc-toolset-12'
         alias 13='scl enable gcc-toolset-13'
       
@@ -40,6 +43,19 @@
       regexp: '^[^#\w]*PasswordAuthentication.*$'
       line: 'PasswordAuthentication no'
       
+  - name: Core dumps 1/2
+    tags: system1
+    become: true
+    lineinfile:
+      path: /etc/systemd/system.conf
+      regexp: '^[^#\w]*DefaultLimitCORE.*$'
+      line: 'DefaultLimitCORE=infinity'
+  
+  - name: Core dumps 2/2
+    tags: system1
+    become: true
+    shell: 'systemctl daemon-reload'
+  
 - name: Some actions for a server account
   tags: user, server
   hosts: all
@@ -51,4 +67,3 @@
       line: >-
         ssh-ed25519
         AAAAC3NzaC1lZDI1NTE5AAAAIGQcUAv+wO0lKeZEXH+Pawnr4L4fTJZADaQopwISzivs x
-

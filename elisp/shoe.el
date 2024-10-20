@@ -938,7 +938,7 @@ and starts new compile. Alternatively, start new compile as
  (visit-tags-table path local))
 
 (setq compile-command "systemd-inhibit --what=handle-lid-switch\
- ionice -c3 scl enable gcc-toolset-12 'make -k'")
+ ionice -c3 scl enable gcc-toolset-12 -- make -k")
 (setq compile-history (list compile-command))
 (savehist-mode)
 
@@ -952,8 +952,9 @@ and starts new compile. Alternatively, start new compile as
 (setenv "PATH"
  "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
 (setenv "GCC_COLORS" "")
-(setq shell-command-switch "-ic")
+(setq shell-command-switch "-ic") ;; Load aliases in .bashrc
 (setq process-connection-type nil)  ;; No pty
+;; ^^ This lets us run sudo with interactive
 (setenv "SUDO_ASKPASS" "/usr/libexec/openssh/gnome-ssh-askpass")
 (setq-default case-fold-search nil case-replace nil
 			  dabbrev-case-fold-search nil)

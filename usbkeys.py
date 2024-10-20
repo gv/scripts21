@@ -27,6 +27,8 @@ parser.add_argument(
     "--insert", action="store_true",
     help="\
 Set Japanese Key to Insert on GPD Pocket 2 keyboard (Japanese firmware)")
+parser.add_argument(
+  "--alt", action="store_true", help="Set CapsLK key to be AltGr")
 args = parser.parse_args()
 
 bpfText="""
@@ -125,6 +127,7 @@ class Keyboard:
         mem.keycode = keycode
         fcntl.ioctl(self.f, self.EVIOCSKEYCODE_V2, mem)
         self.printMapEntry(mem, oldKeycode)
+        return self
 
     def setupJapaneseKey(self, targetCode):
         path = "/proc/sys/kernel/sysrq"
@@ -135,7 +138,10 @@ class Keyboard:
             print("Changed %s from '%s' to '%s'" % (path, old, target))
         self.setKeycode(458805, targetCode)
         # Fix "`"
-        self.setKeycode(458889, 41)
+        return self.setKeycode(458889, 41)
+
+    def setupAlt(self):
+      return self.setKeycode(458809, 100)
 
 if args.sysrq:
     if args.insert:
@@ -144,6 +150,8 @@ if args.sysrq:
     Keyboard().setupJapaneseKey(99)
 elif args.insert:
     Keyboard().setupJapaneseKey(110)
+if args.alt:
+  Keyboard().setupAlt()
 if args.set:
     Keyboard().setKeycode(*args.set)
 if args.get:
@@ -151,5 +159,5 @@ if args.get:
 if args.trace or args.down:
     Trace(args).run()
 if not (args.trace or args.down or args.get or args.set or
-        args.insert or args.sysrq):
+        args.insert or args.sysrq or args.alt):
     parser.print_help()
