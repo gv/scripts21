@@ -44,5 +44,7 @@ x=$here/Linux.emacs/lib-src/emacsclient
 test -f "$x" && emacsclient=$x
 $emacsclient --eval "(progn
   		 (require 'etags)
+		 (let ((previous tags-file-name))
 		 (tags-reset-tags-tables)
-		 (visit-tags-table \"TAGS.bz2\"))"
+		 (visit-tags-table \"TAGS.bz2\")
+		 previous))"

@@ -916,6 +916,7 @@ and starts new compile. Alternatively, start new compile as
 
 (setq tramp-mode t)
 
+(defalias 'afm 'auto-fill-mode)
 (defalias 'yes-or-no-p 'y-or-n-p)
 (defalias 'c 'compile)
 (defalias 'bc 'emacs-lisp-byte-compile-and-load)
@@ -928,7 +929,7 @@ and starts new compile. Alternatively, start new compile as
          (or (locate-dominating-file default-directory "TAGS.bz2")
           default-directory)))
    (list (read-file-name
-          (format-prompt "Visit tags table, current='%s'" "TAGS.bz2"
+          (format "Visit tags table, current='%s': "
 		   tags-file-name)
           default-tag-dir
           (expand-file-name "TAGS.bz2" default-tag-dir) t)
@@ -938,7 +939,7 @@ and starts new compile. Alternatively, start new compile as
  (visit-tags-table path local))
 
 (setq compile-command "systemd-inhibit --what=handle-lid-switch\
- ionice -c3 scl enable gcc-toolset-12 -- make -k")
+ ionice -c3 scl enable gcc-toolset-13 -- make -k")
 (setq compile-history (list compile-command))
 (savehist-mode)
 
@@ -978,9 +979,11 @@ and starts new compile. Alternatively, start new compile as
 
 ;; remove git info from mode line
 (defun vc-refresh-state () "Disable"
-	   (vg-message "vc-refresh-state disabled"))
+ (vg-message "vc-refresh-state disabled"))
+(defun vc-before-save () "Disable"
+ (vg-message "vc-before-save disabled"))
 (defun vc-after-save () "Disable"
-	   (vg-message "Wrote %s (vc-after-save disabled) %d characters" buffer-file-name (buffer-size)))
+ (vg-message "Wrote %s (vc-after-save disabled) %d characters" buffer-file-name (buffer-size)))
 (setq fast-but-imprecise-scrolling t)
 (require 'grep)
 (grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")

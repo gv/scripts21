@@ -38,12 +38,15 @@ parser.add_argument(
 	"-x", "--thread", action="store_true", 
 	help="Unwind stack by counting PUSH/SUB *,SP instructions in code")
 parser.add_argument(
-	"-C", "--threadC", action="store_true", 
-	help="Print all stack words from crashed thread pointing to code")
+	"-z", "--callsites", action="store_true", 
+	help="""
+Print all stack words from crashed thread pointing to code after
+call instructions
+""")
 parser.add_argument(
 	"-y", "--threadn", help="Print all words from stack N")
 parser.add_argument(
-	"-X", "--threadX", action="store_true", 
+	"-X", "--fa", action="store_true", 
 	help="Print all words from crashed thread using `memory read -fA`")
 parser.add_argument(
 	"-Y", "--threadm",
@@ -140,108 +143,28 @@ class SymbolNotOnServer(Exception):
 
 class CallSite:
 	def __init__(self, target):
-		self.target = target
 		self.error = target.error
 		self.sbt = target.target
 		self.sbp = target.process
 		self.args = target.args
-		
-	def loadTopOfStack(self, thread, stack):
-		self.stack = stack
-		self.pc = thread.frames[0].pc
-		self.sp = thread.frames[0].sp
-		self.source = "PC"
-		return self
-	
-	def loadReturnAddress(self, loc, stack):
-		# After call SP points at return address
-		# We need SP before call
-		self.stack = stack
-		self.source = self.descStackPtr(loc)
-		self.pc = self.target.check(
-			self.sbp.ReadPointerFromMemory(loc, self.error))
-		self.sp = loc + ptrSize
-		return self
-
-	def descStackPtr(self, ptr):
-		return "S-%x" % (self.stack.GetRegionEnd() - ptr)
-
-	def findCaller(self):
+		self.target = target
 		class Count:
 			def __init__(self):
 				self.words = self.calls = self.destinations = 0
 				self.pointers = self.readable = 0
 		self.count = Count()
-		pc = lldb.SBAddress(self.pc, self.sbt)
-		self.insns = pc.symbol.IsValid() and\
-			self.target.getFuncInstructions(pc, self.pc)
-		if self.insns:
-			self.pushCount, self.spDecrement =\
-				self.target.getPushCountAndStackDecrement(self.insns)
-			self.returnAddrLocation =\
-				self.sp + (ptrSize*self.pushCount) + self.spDecrement
-			self.loadCallerInstrs(self.returnAddrLocation)
-		else:
-			print(
-				"  Instructions unreadable. Starting search for return address...")
-			self.pushCount = self.spDecrement = None
-			reg = lldb.SBMemoryRegionInfo()
-			check(self.target.process.GetMemoryRegionInfo(self.sp, reg))
-			# If nothing pushed, return address can be located @ sp
-			for pretaddrl in range(self.sp, reg.GetRegionEnd(), ptrSize):
-				self.count.words += 1
-				call = self.loadCallerInstrs(pretaddrl)
-				if not call:
-					continue
-				self.count.calls += 1
-				if not call.destination:
-					continue
-				self.count.destinations += 1
-				# We're looking for the call to an unloaded module
-				# Therefore it must be call to .plt
-				if call.destination:
-					da = self.sbt.ResolveLoadAddress(call.destination)
-					if da.section.name == ".text":
-						if 0:
-							print("Skip:")
-							for inn in self.callerInstrs:
-								self.target.printInstruction(inn, True)
-						self.callerInstrs = None
-						continue
-				self.returnAddrLocation = pretaddrl
-				break
-		return self
 
-	def getReturnAddrLoc(self):
-		self.findCaller()
-		if self.insns:
-			if self.args.disassembly:
-				for inn in self.insns:
-					self.target.printInstruction(inn)
-			sys.stdout.write("  %d push, %d sub, prev pc @ %s\n" % (
-				self.pushCount, self.spDecrement,
-				xx(self.returnAddrLocation)))
-		else:
-			sys.stdout.write(
-				"  Tried %d words, %d -> a section, %d readable, %d calls, %d destinations\n" % (
-					self.count.words, self.count.pointers,
-					self.count.readable, self.count.calls,
-					self.count.destinations))
-		for inn in self.callerInstrs:
-			self.target.printInstruction(inn, True)
-		return self.returnAddrLocation
-
-	def loadCallerInstrs(self, pretaddrl):
+	def loadCallInstr(self, pretaddrl):
 		self.callerInstrs = []
 		ra0 = self.target.check(self.sbp.ReadPointerFromMemory(
 			pretaddrl, self.target.error))
-		ra = lldb.SBAddress(ra0, self.sbt)
+		self.ra = ra = lldb.SBAddress(ra0, self.sbt)
 		if not ra.section.IsValid():
-			# print("%s: %s no section" % (xx(pretaddrl), xx(ra0)))
+			print("%s: %s no section" % (xx(pretaddrl), xx(ra0)))
 			return
 		self.count.pointers += 1
 		if ra.section.file_size == 0:
-			# print("%s: %s no image" % (xx(pretaddrl), xx(ra0)))
+			print("%s: %s no image" % (xx(pretaddrl), xx(ra0)))
 			return
 		self.count.readable += 1
 		if ra.offset == 0:
@@ -263,7 +186,7 @@ class CallSite:
 			self.callerInstrs = self.sbt.GetInstructions(cia, call.ibs)
 		return call
 		
-	def getCall(self, bytes, end):
+	def getCall(self, bytes, end, verbose=False):
 		class Call:
 			def __init__(self, ibs):
 				self.ibs = ibs
@@ -275,8 +198,9 @@ class CallSite:
 			call = Call(bytes[-3:])
 			call.destination = None
 			return call
-		print("  Unknown instr %x %x %x %x %x" % (
-			bytes[-5], bytes[-4], bytes[-3], bytes[-2], bytes[-1]))
+		if verbose:
+			print("  Unknown instr %x %x %x %x %x" % (
+				bytes[-5], bytes[-4], bytes[-3], bytes[-2], bytes[-1]))
 		return False
 
 	def describeAddr(self, addr):
@@ -292,6 +216,113 @@ class CallSite:
 			desc = addr.module.name
 		return desc
 	
+
+class UnwindFrame(CallSite):
+	def loadTopOfStack(self, thread, stack):
+		self.stack = stack
+		self.pc = thread.frames[0].pc
+		self.sp = thread.frames[0].sp
+		self.source = "PC"
+		return self
+	
+	def loadReturnAddress(self, loc, stack):
+		# After call SP points at return address
+		# We need SP before call
+		self.stack = stack
+		self.source = self.descStackPtr(loc)
+		self.pc = self.target.check(
+			self.sbp.ReadPointerFromMemory(loc, self.error))
+		self.sp = loc + ptrSize
+		return self
+
+	def descStackPtr(self, ptr):
+		return "S-%x" % (self.stack.GetRegionEnd() - ptr)
+
+	def calculateFrameSize(self):
+		self.pushCount = self.popCount = self.spDecrement = 0
+		for ii in self.insns:
+			mn = ii.GetMnemonic(self.sbt)
+			if "pushq" == mn:
+				self.pushCount += 1
+			elif "popq" == mn:
+				self.popCount += 1
+			elif "subq" == mn:
+				ops = ii.GetOperands(self.sbt).split(", %rsp")
+				if len(ops) == 2:
+					if self.spDecrement:
+						sys.stdout.write(
+							"Extra sub SP instruction (1st sub=%X): " % sub)
+						self.target.printInstruction(ii)
+					elif not ops[0].startswith("$"):
+						sys.stdout.write("Non-constant sub SP: ")
+						self.target.printInstruction(ii)
+						continue
+					self.spDecrement += int(ops[0][1:], base=0)
+
+	def findCaller(self):
+		pc = lldb.SBAddress(self.pc, self.sbt)
+		self.insns = pc.symbol.IsValid() and\
+			self.target.getFuncInstructions(pc, self.pc)
+		if self.insns:
+			self.calculateFrameSize()
+			self.returnAddrLocation = self.sp +\
+				(ptrSize*(self.pushCount - self.popCount)) + self.spDecrement
+			if self.returnAddrLocation >= self.sp:
+				self.loadCallInstr(self.returnAddrLocation)
+				return self
+			else:
+				print("  popCount=%d pushCount=%d spDecrement=%d, start searching..." % (
+					self.popCount, self.pushCount, self.spDecrement))
+		else:
+			print(
+				"  Instructions unreadable. Starting search for return address...")
+		reg = lldb.SBMemoryRegionInfo()
+		check(self.target.process.GetMemoryRegionInfo(self.sp, reg))
+		# If nothing pushed, return address can be located @ sp
+		for pretaddrl in range(self.sp, reg.GetRegionEnd(), ptrSize):
+			self.count.words += 1
+			call = self.loadCallInstr(pretaddrl)
+			if not call:
+				continue
+			self.count.calls += 1
+			if not call.destination:
+				continue
+			self.count.destinations += 1
+			# We're looking for the call to an unloaded module
+			# Therefore it must be call to .plt
+			if call.destination:
+				da = self.sbt.ResolveLoadAddress(call.destination)
+				if da.section.name == ".text":
+					if 0:
+						print("Skip:")
+						for inn in self.callerInstrs:
+							self.target.printInstruction(inn, True)
+					self.callerInstrs = None
+					continue
+			self.returnAddrLocation = pretaddrl
+			break
+		return self
+
+	def getReturnAddrLoc(self):
+		self.findCaller()
+		if self.insns:
+			if self.args.disassembly:
+				for inn in self.insns:
+					self.target.printInstruction(inn)
+				print(" ==== end of disassembly")
+			sys.stdout.write("  %d push, %d pop, %d sub, prev pc @ %s\n" % (
+				self.pushCount, self.popCount, self.spDecrement,
+				xx(self.returnAddrLocation)))
+		else:
+			sys.stdout.write(
+				"  Tried %d words, %d -> a section, %d readable, %d calls, %d destinations\n" % (
+					self.count.words, self.count.pointers,
+					self.count.readable, self.count.calls,
+					self.count.destinations))
+		for inn in self.callerInstrs:
+			self.target.printInstruction(inn, True)
+		return self.returnAddrLocation
+
 	def print(self):
 		pc = lldb.SBAddress(self.pc, self.sbt)
 		# sys.stdout.write("\u2666 %s: %s %s %s\n" % (
@@ -551,12 +582,12 @@ class Target(Util):
 		print("  %s %s%s %s%s" % (
 			xx(ptr), ibs, name, ii.GetOperands(self.target), comment))
 		if "callq" == name:
-			call = CallSite.getCall(self, bytes, ptr + len(bytes))
+			call = UnwindFrame.getCall(self, bytes, ptr + len(bytes))
 			if call.destination:
 				da = self.target.ResolveLoadAddress(call.destination)
 				print("  => %s %s %s %s" % (
 					xx(call.destination), self.getName(da.module),
-					CallSite.describeAddr(self, da), da.section.name))
+					UnwindFrame.describeAddr(self, da), da.section.name))
 			
 	def getFuncInstructions(self, f, pc):
 		# Doesn't work
@@ -591,148 +622,26 @@ class Target(Util):
 				raise Exception("No thread %d" % n)
 		else:
 			t = n
-		self.printStackInfo(t)
+		stack = self.printStackInfo(t)
 		self.printRegs(t.frames[0], {})
-		stack = lldb.SBMemoryRegionInfo()
-		cs = CallSite(self).loadTopOfStack(t, stack)
-		check(self.process.GetMemoryRegionInfo(cs.sp, stack))
-		if self.args.threadm or self.args.threadX:
+		uwf = UnwindFrame(self).loadTopOfStack(t, stack)
+		if self.args.threadm or self.args.fa:
 			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
-				cs.sp, stack.GetRegionEnd()))
+				uwf.sp, stack.GetRegionEnd()))
 			return
-		while cs:
-			cs.print()
-			cs = CallSite(self).loadReturnAddress(
-				cs.getReturnAddrLoc(), stack)
+		if self.args.thread:
+			while uwf:
+				uwf.print()
+				uwf = UnwindFrame(self).loadReturnAddress(
+					uwf.getReturnAddrLoc(), stack)
+		cs = CallSite(self)
+		for pretaddrl in range(uwf.sp, stack.GetRegionEnd(), ptrSize):
+			if not cs.loadCallInstr(pretaddrl):
+				continue
+			print(cs.describeAddr(cs.ra))
+			for ii in cs.callerInstrs:
+				self.printInstruction(ii)
 
-	def printWordsFromStack0(self, n):
-		if type(n) is int:
-			t = self.process.GetThreadByIndexID(n)
-			if not t.IsValid():
-				raise Exception("No thread %d" % n)
-		else:
-			t = n
-		self.printStackInfo(t)
-		self.printRegs(t.frames[0], {})
-		sp = t.frames[0].sp
-		self.lastPos = sp - ptrSize
-		self.prevPc = 0
-		self.printWord(sp - ptrSize, "pc: ", t.frames[0].pc)
-		reg = lldb.SBMemoryRegionInfo()
-		check(self.process.GetMemoryRegionInfo(sp, reg))
-		if self.args.threadm or self.args.threadX:
-			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
-				sp, reg.GetRegionEnd()))
-			return
-		pos = sp
-		while pos < reg.GetRegionEnd():
-			self.printWordAt(pos, True)
-			# To fix hang: move next pos calculation here
-			if self.args.threadC:
-				pos += ptrSize
-			else:
-				if self.prevPc == pos or self.prevPc == 0:
-					pos += ptrSize
-					continue
-					# print("%X" % self.prevPc)
-					# break
-				pos = self.prevPc
-
-	def printWordAt(self, pos, execOnly=False):
-		p = self.process.ReadPointerFromMemory(pos, self.error)
-		if self.error.fail:
-			print("read pos=%X error='%s'" % (pos, self.error))
-			return
-		if execOnly:
-			reg = lldb.SBMemoryRegionInfo()
-			check(self.process.GetMemoryRegionInfo(p, reg))
-			if not reg.IsExecutable():
-				return
-		if pos - self.lastPos > ptrSize:
-			print("(%d words skipped)" % ((pos-self.lastPos)/ptrSize))
-		self.printWord(pos, xx(pos) + ": ", p)
-		self.lastPos = pos
-
-	def printWord(self, pos, prefix, p):
-		"""
-		If we get SP from thread:
-		Next frame PC is pointed by it at the start of function.
-		If it's valid, we find the call before it.
-		SP before that call = found PC address + ptrSize
-		"""
-		addr = lldb.SBAddress(p, self.target)
-		sys.stdout.write("%s%s %s %s" % (
-			prefix, xx(p), self.getName(addr.module),
-			self.describeAddr(addr)))
-		sys.stdout.flush()
-		if self.args.base:
-			for s in self.getPossibleSourceLines(addr, " at %s:%d"):
-				sys.stdout.write(s)
-				sys.stdout.flush()
-				sys.stdout.write("\n")
-		sys.stdout.write("\n")
-		if addr.symbol.IsValid():
-			insns = self.getFuncInstructions(addr)
-			if insns:
-				npush, sub = self.getPushCountAndStackDecrement(insns)
-				for nn in range(insns.GetSize(), 0, -1):
-					ii = insns.GetInstructionAtIndex(nn - 1)
-					if ii.addr.offset > addr.offset:
-						continue
-					if nn > 2:
-						self.printInstruction(
-							insns.GetInstructionAtIndex(nn - 3))
-					if nn > 1:
-						self.printInstruction(
-							insns.GetInstructionAtIndex(nn - 2))
-					self.printInstruction(ii)
-					break
-				# The meaning is `sub` is subtracted from SP inside the
-				# function. Lower SP values are closer to the top in the
-				# output, so the arrow should poit upwards
-				self.prevPc = pos+ptrSize+(npush*ptrSize)+sub
-				print("  %d pushs + 0x%X SP\u2191, prev PC @ %s" % (
-					npush, sub, xx(self.prevPc)))
-				sys.stdout.flush()
-		block = addr.block
-		count = 0
-		while 0 and block.IsValid():
-			if block.GetInlinedCallSiteFile().IsValid():
-				for p in self.getPossibleSourceLines2(
-						block.GetInlinedCallSiteFile(),
-						block.GetInlinedCallSiteLine(), "at %s:%d"):
-					print("block %d: %s %s" % (
-						count, block.GetInlinedName(), p))
-			block = block.GetParent()
-			count += 1
-		# This only prints "loc='static'". How do i get real var locations?
-		if 0:
-			# arguments, locals, statics
-			for v in block.GetVariables(self.target, True, True, False):
-				print("'%s' loc='%s' v='%s' t=%s(%d)" % (
-					v.name, v.location, v.value,
-					v.type.name, v.type.size))
-		sys.stdout.write("\n")
-		
-	def getPushCountAndStackDecrement(self, insns):	
-		npush = sub = 0
-		for ii in insns:
-			mn = ii.GetMnemonic(self.target)
-			if "pushq" == mn:
-				npush += 1
-			elif "subq" == mn:
-				ops = ii.GetOperands(self.target).split(", %rsp")
-				if len(ops) == 2:
-					if sub:
-						sys.stdout.write(
-							"Extra sub SP instruction (1st sub=%X): " % sub)
-						self.printInstruction(ii)
-					elif not ops[0].startswith("$"):
-						sys.stdout.write("Non-constant sub SP: ")
-						self.printInstruction(ii)
-						continue
-					sub += int(ops[0][1:], base=0)
-		return npush, sub
 
 	def getAscii(self, pos, size):
 		# ReadCStringFromMemory can't specify the code page
@@ -748,6 +657,10 @@ class Target(Util):
 		self.verb("cmd: '%s'\n" % cmd)
 		self.debugger.HandleCommand(cmd)
 
+	def describeName(self, path):
+		bn = os.path.basename(path)
+		return len(bn) < 40 and bn or bn[:40] + "..."
+
 	def printRegions(self):
 		regions = self.process.GetMemoryRegions()
 		r = lldb.SBMemoryRegionInfo()
@@ -757,13 +670,13 @@ class Target(Util):
 			name = r.GetName()
 			if name:
 				name = os.path.basename(name)
-			print("%s %s%s%s%s %016X +%X %s" % (
-				os.path.basename(self.path),
+			print("%s %s%s%s%s %s +%X %s" % (
+				self.describeName(self.path),
 				(r.IsReadable() and "r" or "."),
 				(r.IsWritable() and "w" or "."),
 				(r.IsExecutable() and "x" or "."),
 				(r.IsMapped() and "m" or "."),
-				r.GetRegionBase(), r.GetRegionEnd() - r.GetRegionBase(),
+				xx(r.GetRegionBase()), r.GetRegionEnd() - r.GetRegionBase(),
 				name))
 
 	def replaceModuleFromStorage(self, m):
@@ -1080,7 +993,7 @@ class Tool(Util):
 		elif self.args.threadn or self.args.threadm:
 			t.printWordsFromStack(
 				int(self.args.threadn or self.args.threadm, 10))
-		elif self.args.thread or self.args.threadX:
+		elif self.args.thread or self.args.fa or self.args.callsites:
 			t.printWordsFromStack(t.process.selected_thread)
 		elif self.args.threads:
 			t.printStacks()

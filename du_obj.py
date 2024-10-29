@@ -67,6 +67,8 @@ parser.add_argument(
 	"--show", action="store_true",
 	help="Print as much as possible debug info re: given line")
 parser.add_argument(
+	"--diff", action="store_true", help="Compare section sizes (2 args)")
+parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
 args = parser.parse_args()
@@ -153,6 +155,26 @@ class Input:
 		for sec in self.getAllSections():
 			self.printSec(sec)
 		self.sectionsDumped = True
+
+	def compareSections(self, other):
+		map1, map2 = {}, {}
+		names = []
+		for sec in self.getAllSections():
+			map1[sec.name] = sec
+			if sec.name in names:
+				print("Duplicate section '%s'" % sec.name)
+			names.append(sec.name)
+		for sec in other.getAllSections():
+			map2[sec.name] = sec
+			if sec.name in names:
+				continue
+			names.append(sec.name)
+		for name in names:
+			s1, s2 = (
+				m.get(name) and m.get(name).GetFileByteSize() or 0 for
+				m in (map1, map2))
+			print(" %s %s(%s%s)" % (
+				name, nn(s1), (s2 > s1) and "+" or "-", nn(s2-s1)))
 
 	def getCodeSection(self):
 		if self.cs:
@@ -951,10 +973,22 @@ class Show:
 		for input in self.inputs:
 			input.printContent(path, line)
 
-			
+class Diff(Show):
+	def run(self):
+		if len(self.args.PREFIX) != 2:
+			raise Exception("Must have 2 arguments")
+		i1, i2 = (Input(x, self.args) for x in self.args.PREFIX)
+		i1.compareSections(i2)
+
+if sum(int(not not x) for x in (
+		args.target, args.show, args.diff, args.file, args.calls, args.map)) > 1:
+	print("Can have only 1 of --target --show --diff --file --calls --map")
+	sys.exit(1)
 if args.instructions or args.git:
 	args.file = True
-if args.target:
+if args.diff:
+	Diff(args).run()
+elif args.target:
 	r = CallGraph(args).run()
 elif args.show:
 	r = Show(args).run()
