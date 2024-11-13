@@ -54,6 +54,8 @@ parser.add_argument(
 parser.add_argument(
 	"-D", "--disassembly", action="store_true",
 	help="Show disassembly of functions in the stack")
+parser.add_argument(
+	"-S", "--scan", help="Search memory for the contents of file")
 parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument(
 	"-w", "--dverbose", action="store_true",
@@ -662,6 +664,27 @@ class Target(Util):
 		return len(bn) < 40 and bn or bn[:40] + "..."
 
 	def printRegions(self):
+		class Count:
+			def __init__(self):
+				self.scanned = self.total = 0
+		if self.args.scan:
+			class Sample():
+				def __init__(self, path):
+					self.path = path
+					self.bs = open(path, "rb").read()
+					if 1:
+						pp = self.bs.find(b"?")
+						if pp >= 0:
+							self.bs = self.bs[pp+1:]
+			samples = []
+			if os.path.isdir(self.args.scan):
+				for name in os.listdir(self.args.scan):
+					s = Sample(os.path.join(self.args.scan, name))
+					if len(s.bs) > 0:
+						samples += [s]
+			else:
+				samples = [lSample(self.args.scan)]
+			count = Count()
 		regions = self.process.GetMemoryRegions()
 		r = lldb.SBMemoryRegionInfo()
 		for i in range(regions.GetSize()):
@@ -670,14 +693,43 @@ class Target(Util):
 			name = r.GetName()
 			if name:
 				name = os.path.basename(name)
-			print("%s %s%s%s%s %s +%X %s" % (
+			size = r.GetRegionEnd() - r.GetRegionBase()
+			print("%s %s%s%s%s %s +%s %s %s" % (
 				self.describeName(self.path),
 				(r.IsReadable() and "r" or "."),
 				(r.IsWritable() and "w" or "."),
 				(r.IsExecutable() and "x" or "."),
 				(r.IsMapped() and "m" or "."),
-				xx(r.GetRegionBase()), r.GetRegionEnd() - r.GetRegionBase(),
-				name))
+				xx(r.GetRegionBase()), nn(size),
+				name, r.GetNumDirtyPages()))
+			# if not r.IsReadable(): # or r.IsExecutable():
+			# 	continue
+			if self.args.scan:
+				count.total += size
+				# self.error.Clear() doesn't work
+				self.error = lldb.SBError()
+				all = self.process.ReadMemory(r.GetRegionBase(), size, self.error)
+				if self.error.fail or all is None:
+					print("%s reading %s bytes from %s" % (
+						all and self.error, xx(size), xx(r.GetRegionBase())))
+					continue
+				count.scanned += len(all)
+				for sample in samples:
+					biggerSize = len(sample.bs) + 40
+					p = -1
+					while True:
+						p = all.find(sample.bs, p + 1)
+						if p < 0:
+							break
+						b = self.process.ReadMemory(
+							r.GetRegionBase() + p, biggerSize, self.error)
+						if self.error.fail:
+							print("%s" % self.error)
+							continue
+						print("%s found='%s'" % (sample.path, b))
+		if self.args.scan:
+			print("Scanned %s/%s" % (nn(count.scanned), nn(count.total)))
+			
 
 	def replaceModuleFromStorage(self, m):
 		"""
@@ -1003,6 +1055,8 @@ class Tool(Util):
 			t.printDecodedFrames(t.process.selected_thread)
 		elif self.args.modules or self.args.absent:
 			t.printModules(self)
+		elif self.args.scan:
+			t.printRegions()
 		elif not self.args.stat:
 			t.printRegions()
 		if not (self.args.modules or self.args.absent):

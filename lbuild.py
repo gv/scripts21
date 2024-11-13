@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.9
 "Process build logs and/or run build commands + save artefacts"
 import sys, os, argparse, subprocess, datetime, shutil, errno, re,\
-	stat, shlex
+	stat, shlex, select
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
@@ -108,8 +108,16 @@ class Input:
 			log.write(line)
 			log.flush()
 		if self.verbose:
+			if hasattr(self, "next") and datetime.datetime.now() < self.next:
+				tt = ""
+			else:
+				tt = "(%s)" % self.describeTime()
+				self.next = datetime.datetime.now() + datetime.timedelta(seconds=1)
 			self.verbose.write("%s %s" % (self.describeTime(), line))
 			self.verbose.flush()
+		self.updateCounts(line)
+
+	def updateCounts(self, line):
 		if line.find(" -o ") < 0:
 			return
 		command = Command(line)
@@ -126,11 +134,25 @@ class Input:
 			f.seconds % 60)
 
 	def read(self, stream, out):
+		acc = b""
+		os.set_blocking(stream.fileno(), False)
 		while True:
-			line = stream.readline()
-			if not line:
-				break
-			self.add(line, out)
+			sys.stdout.write("\r%s " % self.describeTime())
+			ready, _, _ = select.select([stream.fileno()], [], [], 1)
+			sys.stdout.write("\r%s " % self.describeTime())
+			sys.stdout.flush()
+			if ready:
+				r = stream.read()
+				if not r:
+					sys.stdout.write("\r")
+					self.add(acc, out)
+					break
+				acc += r
+				lines = acc.split(b"\n")
+				acc = lines.pop()
+				for line in lines:
+					sys.stdout.write("\r")
+					self.add(line, out)
 
 	def logCommand(self, cmd, out=None, env=None):
 		cmd = self.prefix + cmd
@@ -153,7 +175,7 @@ class Build:
 		if os.path.isdir(confpath):
 			base = confpath
 		else:
-			raise Exception("TODO")
+			raise Exception("No directory '%s'" % confpath)
 		self.conf = conf
 		self.platform = sys.platform
 		if self.platform.startswith("linux"):
@@ -307,8 +329,8 @@ class Build:
 						"-u", str(os.getuid()),
 						"-w", build,
 						"-e", f"HOME={build}",
-						"-t", dockerImage,
-						"ionice", "-n7"]
+						"-t"] + dockerImage.split(" ") + [
+							"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)
 			
 class BuildLogTool:
