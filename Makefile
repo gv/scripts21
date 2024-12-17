@@ -55,8 +55,7 @@ __lldb.options = -DCMAKE_CXX_COMPILER=$(Clang_DIR)/bin/clang++\
 	-D CMAKE_C_COMPILER=$(Clang_DIR)/bin/clang\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
 	-DLLDB_INCLUDE_TESTS=0
-swig.options0 = --without-pcre --disable-ccache
-swig.options = -DPCRE_REQUIRED_ARG=
+swig.options += -D WITH_PCRE=OFF
 # RelWithDebInfo doesn't work!
 lldb.options =\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
@@ -64,7 +63,7 @@ lldb.options =\
 	-DLLDB_INCLUDE_TESTS=0\
 	-DLLDB_ENABLE_PYTHON=1\
 	-D CMAKE_EXE_LINKER_FLAGS=-g\
-	-D CMAKE_CXX_FLAGS=-g
+	-D CMAKE_CXX_FLAGS_RELWITHDEBINFO="-g -Os"
 # CMAKE_INSTALL_MODE requires cmake 3.22
 llvm.options =\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
@@ -359,12 +358,11 @@ $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
-	cd $O/$B.$* &&\
 		$($*.envvars) PATH=$(tools)$(PATH)\
 		cmake -DCMAKE_INSTALL_PREFIX="$R"\
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
 		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
-		$(HERE)/$*
+		-S $(HERE)/$* -B $O/$B.$*
 
 %.makefile_in_src: %/Makefile
 	cd $(dir $^) && make --trace

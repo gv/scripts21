@@ -17,7 +17,7 @@
         alias 2e=~/stuff/2emacs.py
         alias inh="systemd-inhibit --what=handle-lid-switch"
         alias inhj="inh journalctl -f"
-        alias g3="bash -ecx 'git stash && git pull --rebase && git stash apply'"
+        alias g3="bash -ecx 'git stash && git pull --rebase --recurse-submodules && git stash apply'"
         alias d3='docker run --rm -v $(pwd):$(pwd) -w $(pwd)'
         alias d4='d3 -u $(id -u)'
         alias d5='d4 -e "HOME=$(pwd)"'
@@ -36,7 +36,7 @@
         alias 13='scl enable gcc-toolset-13'
       
   - name: Disable ssh password
-    tags: system, never
+    tags: never
     become: true
     lineinfile:
       validate: 'sshd -t -f %s'

@@ -27,7 +27,7 @@ while [ $# != 0 ]; do
 	/dev/*)
 	  flags="$flags -drive file=$1,format=raw,$interface"
 	  set -xe
-	  if $(type diskutil); then
+	  if type diskutil; then
 		diskutil unmountDisk force $1
 	  else
 		for partition in $(ls $1?*); do
@@ -37,7 +37,7 @@ while [ $# != 0 ]; do
 		done
 	  fi
 	  sudo chown $(whoami) $1
-	  if $(type diskutil); then
+	  if type diskutil; then
 		diskutil unmountDisk force $1
 	  fi		
 	  ;;
@@ -64,6 +64,9 @@ while [ $# != 0 ]; do
 	+vi)
 	  interface="if=virtio"
 	  ;;
+	tcp:*)
+	  hfwd="$hfwd,hostfwd=$1"
+	  ;;
 	-*)
 	  break
 	  ;;
@@ -77,12 +80,15 @@ set -xe
 test -z "$efi" || test -f $ovmf.tmp || cp $ovmf $ovmf.tmp
 stty intr "^]"
 caff=$(which caffeinate) || acc=kvm
+if echo $hfwd|grep 127.0.0.2; then 
+  ifconfig lo0 alias 127.0.0.2 up
+fi
 nice $caff\
 	 ${QEMU-~/src/build.qemu6/qemu-system-x86_64}\
-	 -m 2.5G\
+	 -m 1.5G\
 	 -display default,show-cursor=on -accel $acc -smp 2\
 	 $flags\
-	 -nic user,model=virtio-net-pci,hostfwd=tcp::3073-:73\
+	 -nic user,model=virtio-net-pci$hfwd\
 	 -serial stdio -parallel none\
 	 -device virtio-tablet-pci\
 	 $efi "$@"

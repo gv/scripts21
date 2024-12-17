@@ -117,6 +117,7 @@
 ;; but abort-recursive-edit (C-]) works better.
 ;; Need to C-g 3 times to get out of isearch. Smth should be done
 (define-key global-map (kbd "ESC ESC") 'keyboard-quit)
+(define-key global-map (kbd "s-g") 'abort-recursive-edit)
 ;; Standard Mac 'other window' key
 (global-set-key (kbd "A-'") 'other-window)
 (global-set-key [M-tab] 'other-window)
@@ -170,7 +171,6 @@
 (define-key global-map [insert]
  (lambda () (interactive)
   (vg-message "Overwrite mode switch disabled")))
-(define-key global-map (kbd "s-g") 'google-at-point)
 (define-key global-map (kbd "s-b") 'end-of-buffer)
 (define-key global-map [f7] 'google-line)
 (define-key global-map [f9] 'gscholar-line)
@@ -210,9 +210,10 @@
  (lambda () (interactive) (find-file "~")))
 (define-key global-map (kbd "C-1")
  (lambda () (interactive) (find-file "~")))
-(define-key global-map (kbd "s-8")
- (lambda () (interactive)
-  (insert (format-time-string "\n* %c. Subject\n"))))
+(define-key global-map (kbd "s-8") 'vg-insert-todays-date)
+(defun vg-insert-todays-date () (interactive)
+ (insert (format-time-string "\n* %c. Subject\n")))
+(put 'vg-insert-todays-date 'delete-selection t)
 
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
@@ -406,8 +407,9 @@ and starts new compile. Alternatively, start new compile as
 
 (defun Vg-current-word-or-selection ()
  (if (use-region-p)
-  (format "\"%s\"" (buffer-substring-no-properties
-					(region-beginning) (region-end)))
+  (format "\"%s\""
+   (string-trim (buffer-substring-no-properties
+				 (region-beginning) (region-end))))
   (find-tag-default)))
 
 (defun google-at-point () (interactive)
@@ -420,23 +422,6 @@ and starts new compile. Alternatively, start new compile as
    " -\"hey delphi\"\
   -\"Roel Van de Paar\" -iluvatar1 -\"A To Z Hacks\" -\"Quick Notepad\
   Tutorial\" -\"Luke Chaffey\" -\"News Source Crawler\"")))
-
-(defun vg-dl () (interactive)
- (let* ((q (Vg-get-query-from-current-line))
-		(nq (replace-regexp-in-string " +" "-"
-			 (string-trim (replace-regexp-in-string "[^A-Za-z0-9]+"
-						   " " q))))
-		(name (concat (format-time-string "%Y%m%d-") nq)))
-  (unless (file-directory-p name)
-   (make-directory-internal name))
-  (compilation-start
-   ;; No quotes should be needed for dirname
-   ;; The URL works better than 'ytsearch:xyz'
-   (format "cd %s && df -h . && y9\
- https://www.youtube.com/results?search_query=%s" name
-	(url-hexify-string q))
-   'compilation-mode (lambda (&rest _) "*youtube-dl*"))))
-(define-key global-map [s-f5] 'vg-dl)
 
 (define-key global-map [s-f4]
  (lambda () (interactive)
@@ -621,15 +606,13 @@ and starts new compile. Alternatively, start new compile as
  (vg-message "python-indent-offset=%d" python-indent-offset))
 (add-hook 'python-mode-hook 'vg-tune-py)
 
-(add-hook 'python-mode-hook 'compact-blame-mode)
-(add-hook 'cperl-mode-hook 'compact-blame-mode)
-(add-hook 'perl-mode-hook 'compact-blame-mode)
-(add-hook 'c-mode-common-hook 'compact-blame-mode)
-(add-hook 'makefile-mode-hook 'compact-blame-mode)
-(add-hook 'js-mode-hook 'compact-blame-mode)
-(add-hook 'tcl-mode-hook 'compact-blame-mode)
-(add-hook 'bat-mode-hook 'compact-blame-mode)
-(add-hook 'emacs-lisp-mode-hook 'compact-blame-mode)
+(add-hook 'find-file-hook 'vg-open-file-hook)
+(defun vg-open-file-hook (&rest _)
+ (highlight-regexp "[[:nonascii:]]")
+ (when
+  (string-match
+   "\\(py\\|cpp\\|h\\|txt\\|Makefile\\)$" buffer-file-name)
+  (compact-blame-mode)))
 
 (defun tune-dabbrev ()
  (Vg-classify-as-punctuation "/"))
@@ -695,17 +678,58 @@ and starts new compile. Alternatively, start new compile as
  (highlight-regexp "\\bvg:.*$" 'hi-green))
 (add-hook 'compilation-start-hook 'Vg-tune-compilation)
 
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
+(add-to-list 'compilation-error-regexp-alist 'asan)
+
+(defun Vg-get-local-search-command (query)
+ (format
+  (if (equal window-system 'ns)
+   "mdfind %s"
+   "tracker search --limit=999 --disable-color %s") query)) 
+
 (defun tracker-search () (interactive)
+ (Vg-reset-dialog 'tracker-search)
+ (Vg-start-local-search
+  (read-shell-command "Command: "
+   (Vg-get-local-search-command
+	(Vg-current-word-or-selection)))))
+
+(defun Vg-start-local-search (cmd)
  ;; Won't run if cwd is deleted
- (let ((default-directory "/")
-	   (cmd (read-shell-command "Command: "
-			 (concat
-			  (if (equal window-system 'ns)
-			   "mdfind "
-			   "tracker search --limit=999 --disable-color ")
-			  (Vg-current-word-or-selection)))))
-  (compilation-start cmd 'compilation-mode
-   (lambda (&rest _) "*tracker-search*"))))
+ (let* ((default-directory "/"))
+  (with-current-buffer
+   (compilation-start cmd 'compilation-mode
+	(lambda (&rest _) "*tracker-search*"))
+   (let ((query (replace-regexp-in-string
+				 (Vg-get-local-search-command "") "" cmd)))
+	;; TODO Still doesn't work when buffer reverted
+	(setq-local revert-buffer-function
+	 (lambda (&rest _)
+	  (setq-local compilation-finish-functions
+	   (cons
+		(lambda (b result)
+		 (insert "\nSearch URLs:\n\n")
+		 (Vg-ins-search-url "s" query
+		  "https://www.google.com/search?q=%s")
+		 (Vg-ins-search-url "u" query
+		  "https://www.youtube.com/results?search_query=%s")
+		 (pop-to-buffer (current-buffer)))
+		compilation-finish-functions))))
+	(funcall revert-buffer-function)))))
+
+(defun Vg-ins-search-url (key query template)
+ (let ((url (format template (url-hexify-string query))))
+  (insert (format "[%s] %s\n" key url))
+  (define-key compilation-mode-map key
+   (lambda () (interactive) (vg-open url)))))
+
+(defun vg-local-search () (interactive)
+ (Vg-start-local-search
+  (Vg-get-local-search-command
+   (if (use-region-p) (Vg-current-word-or-selection)
+	(Vg-get-query-from-current-line)))))
+(define-key global-map (kbd "s-9") 'vg-local-search)
  
 (defmacro Vg-open-url (&rest body)
  `(let* ((line (thing-at-point 'line t))
@@ -735,6 +759,10 @@ and starts new compile. Alternatively, start new compile as
 		 (snip (string-trim (thing-at-point 'line t)))
 		 (word (nth 3 (string-split snip))))
    (Vg-start-process "evince" path "--find" word))))
+
+(defun vg-firefox-url () (interactive)
+ (Vg-open-url
+  (Vg-start-process "/Applications/Firefox.app/Contents/MacOS/firefox" url)))
 
 (defun vg-tune-log-view ()
   (vg-message "truncate-lines=%s" (setq truncate-lines nil)))
@@ -866,15 +894,18 @@ and starts new compile. Alternatively, start new compile as
   "Move region (transient-mark-mode active) or current line
   arg lines up."
   (interactive "*p")				 
-  (move-text-internal (- arg)))		 
+ (move-text-internal (- arg)))
+
+(defun Vg-reset-dialog (cmd)
+ "Experimental: replace active user input prompt (if any) with ours"
+ (when (minibuffer-prompt)
+  (run-at-time nil nil cmd)
+  (throw 'exit t)))
 									 
 (defun gg ()
  "Start grep in the directory where the last grep was done"
  (interactive)
- ;; Experimental: replace active user input prompt (if any) with ours
- (when (minibuffer-prompt)
-  (run-at-time nil nil 'gg)
-  (throw 'exit t))
+ (Vg-reset-dialog 'gg)
  (switch-to-buffer "*grep*")
  (command-execute 'grep))
 
@@ -923,6 +954,7 @@ and starts new compile. Alternatively, start new compile as
 (defalias 'cbm 'compact-blame-mode)
 (defalias 'gl 'git-log)
 (defalias 'vcprl 'vc-print-root-log)
+(defalias 'elbc+l 'emacs-lisp-byte-compile-and-load)
 (defun vtt (path local)
  (interactive
   (let ((default-tag-dir
