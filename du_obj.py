@@ -79,6 +79,10 @@ args = parser.parse_args()
 def nn(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
 
+def xx(n):
+	n = "%X" % n
+	return ",".join(re.findall(r"[0-9a-fA-F]{1,4}", n[::-1]))[::-1]
+
 class Count:
 	__slots__ = ("name", "size")
 	
@@ -110,7 +114,9 @@ class Input:
 		self.target = self.check(
 			d.CreateTarget(self.path, None, None, False, self.error))
 		self.module = self.target.GetModuleAtIndex(0)
-		pdb = re.sub("[.](dll|exe)$", ".pdb", self.path)
+		pdb = self.path + ".pdb"
+		if not os.path.isfile(pdb):
+			pdb = re.sub("[.](dll|exe)$", ".pdb", self.path)
 		if pdb != self.path:
 			d.HandleCommand("target symbols add %s" % pdb)
 			if os.path.realpath(self.module.GetSymbolFileSpec().fullpath) !=\
@@ -253,7 +259,7 @@ class Input:
 				up.processEntry(e, size, self, None)
 				up.progress(size)
 
-	def printFields(self, prefix, type, printed):
+	def printFields(self, prefix, offset, type, printed):
 		printed.add(type.name)
 		allFields = [
 			type.GetDirectBaseClassAtIndex(i)
@@ -265,11 +271,10 @@ class Input:
 			ft = fl.GetType().GetCanonicalType()
 			if ft.name and name and name != ft.name:
 				name += " " + ft.name
+			start = offset + fl.GetOffsetInBytes()
 			print("%s%-8s %s" % (
-				prefix, "%d-%d" % (
-					fl.GetOffsetInBytes(),
-					fl.GetOffsetInBytes() + ft.size), name))
-			self.printFields(prefix + " ", ft, printed)
+				prefix, "%d-%d" % (start, start + ft.size), name))
+			self.printFields(prefix + "-", start, ft, printed)
 			if self.args.recurse and ft.IsPointerType():
 				if ft.GetPointeeType().name in printed:
 					continue
@@ -307,7 +312,7 @@ class Input:
 
 	def printOneType(self, t):
 		print("\rsize=%d name=%s" % (t.size, t.name))
-		self.printFields(" ", t, set())
+		self.printFields("+", 0, t, set())
 
 	def descAddr(self, addr):
 		return "%s:%016X" % (
@@ -775,8 +780,9 @@ class Calls(Context):
 		if self.args.all:
 			if not s.name:
 				return
-			print("%016X %6d %2d %s%s loc='%s'" % (
-				s.GetStartAddress().GetOffset(), self.getSize(s),
+			print("%s+%s %6d %2d %s%s loc='%s'" % (
+				s.GetStartAddress().section.name,
+				xx(s.GetStartAddress().GetOffset()), self.getSize(s),
 				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or "",
 				self.getLocation(s.GetStartAddress(), "%s:%d")))
 			return
@@ -961,7 +967,7 @@ class Show:
 		self.args = args
 
 	def run(self):
-		self.inputs = []
+		self.inputs = [Input(p, self.args) for p in self.args.input or []]
 		target = self.args.PREFIX.pop()
 		for path in self.args.PREFIX:
 			self.inputs.append(Input(path, args))

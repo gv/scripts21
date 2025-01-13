@@ -352,6 +352,7 @@ def scanStack(debugger, command, result, internal_dict):
 	sd.printStack(sd.process.GetSelectedThread().GetSelectedFrame(), None, None)
 
 def __lldb_init_module(debugger, internal_dict):
+	# To load: command script import ~/stuff/emacstools.py 
 	debugger.HandleCommand(
 		"command script add -f emacstools.printLispObject plo")
 	debugger.HandleCommand(
