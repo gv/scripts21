@@ -673,11 +673,13 @@ and starts new compile. Alternatively, start new compile as
  (define-key compilation-mode-map "f" 'vg-firefox-url)
  (define-key compilation-mode-map "e" 'vg-open-url-evince)
  (define-key compilation-mode-map [delete] 'kill-compilation)
+ (define-key compilation-mode-map [kp-delete] 'kill-compilation)
  (highlight-regexp Vg-url-pattern)
  ;; Highlight debug print
  (highlight-regexp "\\bvg:.*$" 'hi-green))
 (add-hook 'compilation-start-hook 'Vg-tune-compilation)
 
+(require 'compile)
 (add-to-list 'compilation-error-regexp-alist-alist
  '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
 (add-to-list 'compilation-error-regexp-alist 'asan)
@@ -983,7 +985,7 @@ and starts new compile. Alternatively, start new compile as
    (expand-file-name "bin/emacsclient" invocation-directory))))
 (setenv "PAGER" "cat")
 (setenv "PATH"
- "/Library/Frameworks/Python.framework/Versions/3.10/bin:$PATH" t)
+ "/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:$PATH" t)
 (setenv "GCC_COLORS" "")
 (setq shell-command-switch "-ic") ;; Load aliases in .bashrc
 (setq process-connection-type nil)  ;; No pty

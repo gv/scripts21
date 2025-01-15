@@ -30,7 +30,8 @@ list "$@"| egrep -v $tests|\
   time nice xargs -n100 -t etags -a --regex '/JS_GLOBAL_FN(.+)/\1/'\
 	   --regex '/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
 	   --regex '/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
-	   --regex '/.*[. ]\(\w+\) = function/\1/'
+	   --regex '/.*[. ]\(\w+\) = function/\1/'\
+	   --regex '/.*\(\w+\) *: function/\1/'
 # Add only file paths for tests (might be empty)
 list "$@"| egrep $tests| time nice xargs -n999 -t etags -a --language=none || true
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS

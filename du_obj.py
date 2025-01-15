@@ -56,6 +56,9 @@ parser.add_argument(
 parser.add_argument(
 	"--all", action="store_true", help="Print symbol data")
 parser.add_argument(
+	"--sfp", action="store_true",
+	help="Print function that use push bp/mov bp, sp")
+parser.add_argument(
 	"--types", action="store_true", help="List types & exit")
 parser.add_argument(
 	"--containing", "-I", action="store_true",
@@ -331,10 +334,14 @@ class Input:
 
 	def getFunctions(self, context):
 		for s in self.module.symbols:
+			context.symbols.size += 1
 			if s.GetStartAddress().IsValid():
-				if self.args.all or\
-				   s.GetStartAddress().GetSection().name == ".text":
+				isFunc = int(s.GetStartAddress().GetSection().name == ".text")
+				context.functions.size += isFunc
+				if self.args.all or isFunc:
 					context.processSymbol(s)
+			else:
+				context.noAddress.size += 1
 
 	def getInstructions(self, context):
 		text = self.getCodeSection()
@@ -761,24 +768,35 @@ class Calls(Context):
 		self.unknownTgt = Count("<unknown target>")
 		self.calls = Count("<call instructions>")
 		self.instructions = Count("<total instructions>")
+		self.noName = Count("<no name>")
+		self.symbols = Count("<symbols>")
+		self.noAddress = Count("<no address>")
+		self.functions = Count("<functions>")
+		self.endbr = Count("<endbr>")
+		self.sfp = Count("<stack frame used>")
 		for input in inputs:
-			if self.args.functions or self.args.all or self.args.ds:
+			if self.args.functions or self.args.all or\
+				 self.args.ds or self.args.sfp:
 				input.run = input.getFunctions
 			else:
 				input.run = input.getInstructions
 				sec = input.getCodeSection()
 				input.target.SetSectionLoadAddress(sec, sec.GetFileAddress())
 
+	def dumpSymbol(self, s):
+		addr = s.GetStartAddress()
+		print("%6d %s+%s %2d %s%s loc='%s'" % (
+			self.getSize(s),
+			addr.section.name, xx(addr.GetOffset()),
+			s.GetType(), s.name, s.IsSynthetic() and " synthetic" or "",
+			self.getLocation(addr, "%s:%d")))
+
 	def processSymbol(self, s):
 		if not s.name:
+			self.noName.size += 1
 			return
 		if self.args.ds:
-			addr = s.GetStartAddress()
-			print("%6d %s+%s %2d %s%s loc='%s'" % (
-				self.getSize(s),
-				addr.section.name, xx(addr.GetOffset()),
-				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or "",
-				self.getLocation(addr, "%s:%d")))
+			self.dumpSymbol(s)
 			return
 		if self.args.PREFIX:
 			found = None
@@ -794,14 +812,31 @@ class Calls(Context):
 		if not t:
 			self.symbolInfo[key] = t = ss
 		t.count += 1
+		# Look for endbr and stack frame prologue
+		addr = s.GetStartAddress()
+		if addr.section.name != ".text":
+			return
+		err = lldb.SBError()
+		bytes = addr.section.GetSectionData().ReadRawData(
+			err, addr.offset, 8)
+		if err.fail:
+			self.unreadable.size += 1
+			return
+		if bytes[0:4] == b"\xF3\x0F\x1E\xFA":
+			self.endbr.size += 1
+			bytes = bytes[4:]
+		if bytes == b"\x55\x48\x89\xE5":
+			if self.args.sfp:
+				self.dumpSymbol(s)
+			self.sfp.size += 1
 
 	def printCall(self, src, ins, arg):
 		target = self.getLocation(arg, " at %s:%d")
 		if not target:
-			self.unknownTgt.size += 1
 			target = ""
 		print("%s %s -> %s%s" % (
 			src, ins.addr.symbol.name, arg.symbol.name, target))
+		sys.stdout.flush()
 
 	def processInstruction(self, ins, input):
 		self.instructions.size += 1
@@ -811,17 +846,18 @@ class Calls(Context):
 		right = ins.GetOperands(input.target)
 		if "%" in right:
 			return
+		self.calls.size += 1
 		v = int(right, 16)
 		arg = lldb.SBAddress(v, input.target)
 		src = self.getLocation(ins.addr, "%s:%d:")
-		if src:
-			if self.target:
-				if arg.symbol.name and self.target in arg.symbol.name:
-					self.printCall(src, ins, arg)
-			else:
-				self.printCall(src, ins, arg)
-		else:
+		if not src:
 			self.unknownSrc.size += 1
+			src = ins.addr.symbol.name or "<unknown>"
+		if not arg.symbol.name:
+			self.unknownTgt.size += 1
+		if (not self.target) or\
+			(arg.symbol.name and self.target in arg.symbol.name):
+				self.printCall(src, ins, arg)
 
 	def getLocation(self, addr, fmt):
 		le = addr.line_entry
@@ -831,17 +867,21 @@ class Calls(Context):
 			KeyFromSpec(self, le.GetFileSpec()).getPath(), le.GetLine())
 		
 	def report(self):
-		if not (self.args.functions or self.args.all):
+		if not (self.args.functions or self.args.all or self.args.sfp):
 			self.reportCounts([
 				self.unknownSrc, self.unknownTgt, self.calls,
 				self.instructions])
 			return
 		functions = self.symbolInfo.values()
-		if self.args.verbose:
-			sys.stderr.write("Sorting %d functions...\n" % len(functions))
-		for s in sorted(functions, key=SymbolStat.getCount):
-			print("%10s %s" % (
-				"%d*%d" % (s.size, s.count), s.name))
+		if not self.args.sfp:
+			if self.args.verbose:
+				sys.stderr.write("Sorting %d functions...\n" % len(functions))
+			for s in sorted(functions, key=SymbolStat.getCount):
+				print("%10s %s" % (
+					"%d*%d" % (s.size, s.count), s.name))
+		self.reportCounts([
+			self.symbols, self.functions, self.noAddress, self.noName,
+			self.endbr, self.sfp])
 
 	def getSize(self, s):
 		return s.GetEndAddress().GetOffset() -\
@@ -999,7 +1039,8 @@ elif args.target:
 elif args.show:
 	r = Show(args).run()
 else:	
-	((args.all or args.calls or args.functions or args.ds) and Calls or\
+	((args.all or args.calls or args.functions or args.ds or args.sfp) and\
+	 Calls or\
 	 args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))
