@@ -47,10 +47,12 @@ parser.add_argument(
 	help="Hanlde object/lib names containing substring as separate sources")
 parser.add_argument(
 	"--git", help="Get file list + contents form REVISION (-f)")
+parser.add_argument("--ds", action="store_true", help="Dump symbols")
 parser.add_argument(
 	"--calls", action="store_true", help="Get function calls (non virtual)")
 parser.add_argument(
-	"--symbols", action="store_true", help="Get symbol sizes and repeat counts")
+	"--functions", action="store_true",
+	help="Get function symbol sizes and repeat counts")
 parser.add_argument(
 	"--all", action="store_true", help="Print symbol data")
 parser.add_argument(
@@ -142,17 +144,17 @@ class Input:
 			raise Exception(str(self.error))
 		return result
 
+	def getSubSections(self, sec):
+		for i in range(sec.GetNumSubSections()):
+			yield sec.GetSubSectionAtIndex(i)
+			for t in self.getSubSections(sec.GetSubSectionAtIndex(i)):
+				yield t
+
 	def getAllSections(self):
-		def getSubSections(sec):
-			yield sec
-			if sec.GetNumSubSections() == 0:
-				return
-			for i in range(sec.GetNumSubSections()):
-				for t in getSubSections(sec.GetSubSectionAtIndex(i)):
-					yield t
 		# "for sec in self.module.section" yields None sometimes
 		for i in range(self.module.GetNumSections()):
-			for u in getSubSections(self.module.GetSectionAtIndex(i)):
+			yield self.module.GetSectionAtIndex(i)
+			for u in self.getSubSections(self.module.GetSectionAtIndex(i)):
 				yield u
 
 	def dumpSections(self):
@@ -179,8 +181,9 @@ class Input:
 			s1, s2 = (
 				m.get(name) and m.get(name).GetFileByteSize() or 0 for
 				m in (map1, map2))
-			print(" %s %s(%s%s)" % (
-				name, nn(s1), (s2 > s1) and "+" or "-", nn(s2-s1)))
+			print(" %30s  %s" % (
+				"%s(%s%s)" % (
+					nn(s1), (s2 > s1) and "+" or "-", nn(s2-s1)), name))
 
 	def getCodeSection(self):
 		if self.cs:
@@ -759,7 +762,7 @@ class Calls(Context):
 		self.calls = Count("<call instructions>")
 		self.instructions = Count("<total instructions>")
 		for input in inputs:
-			if self.args.symbols or self.args.all:
+			if self.args.functions or self.args.all or self.args.ds:
 				input.run = input.getFunctions
 			else:
 				input.run = input.getInstructions
@@ -767,9 +770,17 @@ class Calls(Context):
 				input.target.SetSectionLoadAddress(sec, sec.GetFileAddress())
 
 	def processSymbol(self, s):
+		if not s.name:
+			return
+		if self.args.ds:
+			addr = s.GetStartAddress()
+			print("%6d %s+%s %2d %s%s loc='%s'" % (
+				self.getSize(s),
+				addr.section.name, xx(addr.GetOffset()),
+				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or "",
+				self.getLocation(addr, "%s:%d")))
+			return
 		if self.args.PREFIX:
-			if not s.name:
-				return
 			found = None
 			for str in self.args.PREFIX:
 				if str in s.name:
@@ -777,17 +788,6 @@ class Calls(Context):
 					break
 			if not found:
 				return
-		if self.args.all:
-			if not s.name:
-				return
-			print("%s+%s %6d %2d %s%s loc='%s'" % (
-				s.GetStartAddress().section.name,
-				xx(s.GetStartAddress().GetOffset()), self.getSize(s),
-				s.GetType(), s.name, s.IsSynthetic() and " synthetic" or "",
-				self.getLocation(s.GetStartAddress(), "%s:%d")))
-			return
-		if not s.name:
-			return
 		ss = SymbolStat(s, self.args)
 		key = "%d %s" % (self.getSize(s), ss.name)
 		t = self.symbolInfo.get(key)
@@ -831,7 +831,7 @@ class Calls(Context):
 			KeyFromSpec(self, le.GetFileSpec()).getPath(), le.GetLine())
 		
 	def report(self):
-		if not self.args.symbols:
+		if not (self.args.functions or self.args.all):
 			self.reportCounts([
 				self.unknownSrc, self.unknownTgt, self.calls,
 				self.instructions])
@@ -999,7 +999,7 @@ elif args.target:
 elif args.show:
 	r = Show(args).run()
 else:	
-	((args.all or args.calls) and Calls or\
+	((args.all or args.calls or args.functions or args.ds) and Calls or\
 	 args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))
