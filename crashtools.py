@@ -49,6 +49,8 @@ parser.add_argument(
 	"-X", "--fa", action="store_true", 
 	help="Print all words from crashed thread using `memory read -fA`")
 parser.add_argument(
+	"-H", "--hex", action="store_true", help="Hex dump stack of crashed thread")
+parser.add_argument(
 	"-Y", "--threadm",
 	help="Print all words from stack N using `memory read -fA`")
 parser.add_argument(
@@ -103,6 +105,36 @@ def xx(n):
 	n = "%X" % n
 	return ",".join(re.findall(r"[0-9a-fA-F]{1,4}", n[::-1]))[::-1]
 
+def xr(start, end):
+	sx = xx(start)
+	ex = xx(end)
+	prefix = ""
+	if len(sx) == len(ex):
+		for p in range(len(ex)):
+			if sx[p] != ex[p]:
+				break
+			prefix += sx[p]
+	return "%s[%s-%s]" % (prefix, sx[len(prefix):], ex[len(prefix):])
+
+def hexDumpMem(process, start, end, error):
+	lsize = 16
+	while start < end:
+		if lsize > end - start:
+			lsize = end - start
+		st = process.ReadMemory(start, lsize, error)
+		if error.fail:
+			raise Exception(str(error))
+		sys.stdout.write(" %X " % start)
+		sys.stdout.write(
+			("%02X " * lsize) % tuple(bytearray(st)))
+		for c in st:
+			if type(c) == int:
+				sys.stdout.write(c < 32 and "." or chr(c))
+				continue
+			sys.stdout.write(ord(c) < 32 and "." or c)
+		sys.stdout.write("\n")
+		start += lsize
+
 ptrSize = 8
 
 class Count:
@@ -117,6 +149,9 @@ class WorkCount:
 	def __init__(self, todo=0):
 		self.done = 0
 		self.total = todo
+
+class DebuggerError(Exception):
+	pass
 
 class Util:
 	def verb(self, message):
@@ -140,6 +175,11 @@ class Util:
 		self.verb("Variable '%s' was set to '%s' (was '%s')\n" % (
 			name, value, " ".join(old)))
 
+	def check(self, result):
+		if self.error.fail:
+			raise DebuggerError(str(self.error))
+		return result
+
 class SymbolNotOnServer(Exception):
 	pass
 
@@ -157,17 +197,22 @@ class CallSite:
 		self.count = Count()
 
 	def loadCallInstr(self, pretaddrl):
+		msg = self.loadCallInstrGetMessage(pretaddrl)
+		if msg:
+			print("%s: %s %s" % (xx(pretaddrl), xx(self.ra0), msg))
+		else:
+			return self.call
+
+	def loadCallInstrGetMessage(self, pretaddrl):
 		self.callerInstrs = []
-		ra0 = self.target.check(self.sbp.ReadPointerFromMemory(
+		self.ra0 = ra0 = self.target.check(self.sbp.ReadPointerFromMemory(
 			pretaddrl, self.target.error))
 		self.ra = ra = lldb.SBAddress(ra0, self.sbt)
 		if not ra.section.IsValid():
-			print("%s: %s no section" % (xx(pretaddrl), xx(ra0)))
-			return
+			return "no sec"
 		self.count.pointers += 1
 		if ra.section.file_size == 0:
-			print("%s: %s no image" % (xx(pretaddrl), xx(ra0)))
-			return
+			return "no image"
 		self.count.readable += 1
 		if ra.offset == 0:
 			return
@@ -182,11 +227,10 @@ class CallSite:
 				self.error, self.target.getName(ra.module),
 				xx(self.sbt.GetLoadAddress(ibuf)),
 				self.describeAddr(ibuf), ra.section.file_size))
-		call = self.getCall(bytes, ra0)
+		self.call = call = self.getCall(bytes, ra0)
 		if call:
 			cia = lldb.SBAddress(ra0 - len(call.ibs), self.sbt)
 			self.callerInstrs = self.sbt.GetInstructions(cia, call.ibs)
-		return call
 		
 	def getCall(self, bytes, end, verbose=False):
 		class Call:
@@ -196,13 +240,12 @@ class CallSite:
 			call = Call(bytes[-5:])
 			call.destination = struct.unpack("i", bytes[-4:])[0] + end
 			return call
-		if bytes[-3] == 0xff:
+		if len(bytes) >= 3	and bytes[-3] == 0xff:
 			call = Call(bytes[-3:])
 			call.destination = None
 			return call
 		if verbose:
-			print("  Unknown instr %x %x %x %x %x" % (
-				bytes[-5], bytes[-4], bytes[-3], bytes[-2], bytes[-1]))
+			print("	 Unknown instr %x %x %x %x %x" % bytes[-5:-1])
 		return False
 
 	def describeAddr(self, addr):
@@ -273,11 +316,12 @@ class UnwindFrame(CallSite):
 				self.loadCallInstr(self.returnAddrLocation)
 				return self
 			else:
-				print("  popCount=%d pushCount=%d spDecrement=%d, start searching..." % (
+				print("	 popCount=%d pushCount=%d spDecrement=%d, start searching..." % (
 					self.popCount, self.pushCount, self.spDecrement))
 		else:
 			print(
-				"  Instructions unreadable. Starting search for return address...")
+				"	 Instructions unreadable @ %s." % (self.describeAddr(pc))) 
+			print(" Starting search for return address...")
 		reg = lldb.SBMemoryRegionInfo()
 		check(self.target.process.GetMemoryRegionInfo(self.sp, reg))
 		# If nothing pushed, return address can be located @ sp
@@ -312,12 +356,12 @@ class UnwindFrame(CallSite):
 				for inn in self.insns:
 					self.target.printInstruction(inn)
 				print(" ==== end of disassembly")
-			sys.stdout.write("  %d push, %d pop, %d sub, prev pc @ %s\n" % (
+			sys.stdout.write("	%d push, %d pop, %d sub, prev pc @ %s\n" % (
 				self.pushCount, self.popCount, self.spDecrement,
 				xx(self.returnAddrLocation)))
 		else:
 			sys.stdout.write(
-				"  Tried %d words, %d -> a section, %d readable, %d calls, %d destinations\n" % (
+				"	 Tried %d words, %d -> a section, %d readable, %d calls, %d destinations\n" % (
 					self.count.words, self.count.pointers,
 					self.count.readable, self.count.calls,
 					self.count.destinations))
@@ -382,12 +426,12 @@ class Target(Util):
 					self.verb("No symbol file '%s'" % pdb)
 					continue
 			if 0 and\
-			   not m.file.fullpath.startswith(self.args.storage) and\
-			   not m.file.fullpath.startswith(self.storagePath):
+				 not m.file.fullpath.startswith(self.args.storage) and\
+				 not m.file.fullpath.startswith(self.storagePath):
 				continue
 			self.runDebuggerCommand("target symbols add %s" % pdb)
 			if os.path.realpath(m.GetSymbolFileSpec().fullpath) !=\
-			   os.path.realpath(pdb):
+				 os.path.realpath(pdb):
 				raise Exception(
 					"Symbol file path must be '%s' but is '%s'" % (
 					pdb, m.GetSymbolFileSpec().fullpath))
@@ -410,20 +454,15 @@ class Target(Util):
 		self.verb("DONE\n")
 		return self
 
-	def check(self, result):
-		if self.error.fail:
-			raise Exception(str(self.error))
-		return result
-
 	storageShort = u"\u25A0"
 	def getName(self, m):
 		if not m.IsValid():
 			return "-"
 		if self.args.storage and\
-		   m.file.fullpath.startswith(self.args.storage):
+			 m.file.fullpath.startswith(self.args.storage):
 			return self.storageShort + m.file.fullpath[len(self.args.storage):]
 		if self.storagePath and\
-		   m.file.fullpath.startswith(self.storagePath):
+			 m.file.fullpath.startswith(self.storagePath):
 			return self.storageShort + m.file.fullpath[len(self.storagePath):]
 		parts = m.file.fullpath.split(os.sep)
 		if len(parts) <= 1:
@@ -558,7 +597,7 @@ class Target(Util):
 		for rs in f.GetRegisters():
 			for v in rs:
 				if v.name[0] == "r" and\
-				   not v.name in ["rflags", "rip", "rsp"]:
+					 not v.name in ["rflags", "rip", "rsp"]:
 					if prevVals.get(v.name) == v.value:
 						continue
 					if v.value is None:
@@ -581,13 +620,13 @@ class Target(Util):
 			comment = " ; " + comment
 		name = ii.GetMnemonic(self.target)
 		ptr = ii.addr.GetLoadAddress(self.target)
-		print("  %s %s%s %s%s" % (
+		print("	 %s %s%s %s%s" % (
 			xx(ptr), ibs, name, ii.GetOperands(self.target), comment))
 		if "callq" == name:
 			call = UnwindFrame.getCall(self, bytes, ptr + len(bytes))
-			if call.destination:
+			if call and call.destination:
 				da = self.target.ResolveLoadAddress(call.destination)
-				print("  => %s %s %s %s" % (
+				print("	 => %s %s %s %s" % (
 					xx(call.destination), self.getName(da.module),
 					UnwindFrame.describeAddr(self, da), da.section.name))
 			
@@ -631,6 +670,10 @@ class Target(Util):
 			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
 				uwf.sp, stack.GetRegionEnd()))
 			return
+		if self.args.hex:
+			self.check(hexDumpMem(
+				self.process, uwf.sp, stack.GetRegionEnd(), self.error))
+			return
 		if self.args.thread:
 			while uwf:
 				uwf.print()
@@ -638,9 +681,33 @@ class Target(Util):
 					uwf.getReturnAddrLoc(), stack)
 		cs = CallSite(self)
 		for pretaddrl in range(uwf.sp, stack.GetRegionEnd(), ptrSize):
-			if not cs.loadCallInstr(pretaddrl):
+			# If it points to current stack then it can't be return address
+			self.error.Clear()
+			ra0 = self.check(self.process.ReadPointerFromMemory(
+				pretaddrl, self.error))
+			# Important bc if it's not "this stack" then it's probably
+			# the heap
+			# TODO:
+			# Detect pointers to another threads stack bc it's probably
+			# some kind of anomaly
+			# Also, detect pointers that point down the stack - can't be
+			# good too
+			if ra0 >= uwf.sp and ra0 <= stack.GetRegionEnd():
+				print("%s: %s this stack +%s" % (
+					xx(pretaddrl), xx(ra0), nn(ra0-pretaddrl)))
 				continue
-			print(cs.describeAddr(cs.ra))
+			msg = cs.loadCallInstrGetMessage(pretaddrl)
+			if not cs.ra.section.IsValid():
+				pointed0 = self.process.ReadPointerFromMemory(ra0, self.error)
+				if not self.error.fail:
+					print("%s: %s => %s %s" % (
+						xx(pretaddrl), xx(ra0), xx(pointed0), 
+						cs.describeAddr(self.target.ResolveLoadAddress(pointed0))))
+				continue
+			if msg:
+				print("%s: %s %s" % (xx(pretaddrl), xx(ra0), msg))
+				continue
+			print("%s: %s %s" % (xx(pretaddrl), xx(ra0), cs.describeAddr(cs.ra)))
 			for ii in cs.callerInstrs:
 				self.printInstruction(ii)
 
@@ -663,10 +730,16 @@ class Target(Util):
 		bn = os.path.basename(path)
 		return len(bn) < 40 and bn or bn[:40] + "..."
 
+	def getThreadWithStackInRegion(self, r):
+		for th in self.process.threads:
+			sp = th.frames[0].sp
+			if sp >= r.GetRegionBase() and sp < r.GetRegionEnd():
+				return th
+
 	def printRegions(self):
 		class Count:
 			def __init__(self):
-				self.scanned = self.total = 0
+				self.scanned = self.total = self.errors = self.readable = 0
 		if self.args.scan:
 			class Sample():
 				def __init__(self, path):
@@ -683,7 +756,7 @@ class Target(Util):
 					if len(s.bs) > 0:
 						samples += [s]
 			else:
-				samples = [lSample(self.args.scan)]
+				samples = [Sample(self.args.scan)]
 			count = Count()
 		regions = self.process.GetMemoryRegions()
 		r = lldb.SBMemoryRegionInfo()
@@ -694,24 +767,33 @@ class Target(Util):
 			if name:
 				name = os.path.basename(name)
 			size = r.GetRegionEnd() - r.GetRegionBase()
-			print("%s %s%s%s%s %s +%s %s %s" % (
+			if self.args.scan and not r.IsReadable(): # or r.IsExecutable():
+				continue
+			th = self.getThreadWithStackInRegion(r)
+			# r.GetNumDirtyPages() always returns 0
+			print("%s %s%s%s%s %s %s%s" % (
 				self.describeName(self.path),
 				(r.IsReadable() and "r" or "."),
 				(r.IsWritable() and "w" or "."),
 				(r.IsExecutable() and "x" or "."),
 				(r.IsMapped() and "m" or "."),
-				xx(r.GetRegionBase()), nn(size),
-				name, r.GetNumDirtyPages()))
-			# if not r.IsReadable(): # or r.IsExecutable():
-			# 	continue
+				xr(r.GetRegionBase(), r.GetRegionEnd()),
+				name and (" '%s'" % name) or "",
+				th and (" Stack%s" % th.GetIndexID()) or ""))
 			if self.args.scan:
-				count.total += size
+				count.readable += 1
 				# self.error.Clear() doesn't work
 				self.error = lldb.SBError()
 				all = self.process.ReadMemory(r.GetRegionBase(), size, self.error)
+				if self.error.fail or (all is None) or len(all) < size:
+					print("Got %s reading %s bytes from %s" % (
+						self.error.fail and self.error or (all and nn(len(all))),
+						nn(size), xx(r.GetRegionBase())))
+					count.errors += 1
+				# Error is for sections that don't have PT_LOAD type
+				if not self.error.fail:
+					count.total += size
 				if self.error.fail or all is None:
-					print("%s reading %s bytes from %s" % (
-						all and self.error, xx(size), xx(r.GetRegionBase())))
 					continue
 				count.scanned += len(all)
 				for sample in samples:
@@ -726,9 +808,12 @@ class Target(Util):
 						if self.error.fail:
 							print("%s" % self.error)
 							continue
-						print("%s found='%s'" % (sample.path, b))
+						print("%s %s found='%s'" % (
+							sample.path, xx(r.GetRegionBase() + p), b))
 		if self.args.scan:
-			print("Scanned %s/%s" % (nn(count.scanned), nn(count.total)))
+			print("Scanned %s/%s, %d errors of %d regions (%d readable)" %
+						(nn(count.scanned), nn(count.total),
+						 count.errors, regions.GetSize(), count.readable))
 			
 
 	def replaceModuleFromStorage(self, m):
@@ -790,7 +875,7 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 			parts = path.split("/")
 			if len(parts) > 1:
 				if self.args.storage and\
-				   m.file.fullpath.startswith(self.args.storage):
+					 m.file.fullpath.startswith(self.args.storage):
 					count.store += 1
 				elif parts[1] in ["Volumes", "Applications"]:
 					count.other += 1
@@ -815,16 +900,19 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 					self.getSymbolFileName(m)))
 				if m.GetUUIDString():
 					print(
-						"curl -L https://debuginfod.debian.net/buildid/%s/debuginfo  -o %s.pdb" % (
+						"curl -L https://debuginfod.debian.net/buildid/%s/debuginfo	 -o %s.pdb" % (
 #						"curl -L https://debuginfod.ubuntu.com/buildid/%s/debuginfo -o %s.pdb" % (
 							getId(m, True).lower(), m.file.basename))
-				if fsize and 0:
+				if fsize:
 					def printSec(prefix, sec):
-						print("%s%s" % (prefix, sec.name))
+						print("%s%s+%s %s" % (
+							prefix, xx(sec.GetLoadAddress(self.target)),
+							xx(sec.GetByteSize()),
+							sec.name))
 						for i in range(sec.GetNumSubSections()):
 							printSec(prefix + " ", sec.GetSubSectionAtIndex(i))
 					for sec in m.sections:
-						printSec("  ", sec)
+						printSec("	", sec)
 		if 1:
 			print("gdb -ex 'set sysroot %s' %s %s" % (
 				os.path.dirname(self.target.executable.fullpath),
@@ -851,7 +939,7 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 				print("Invalid load address for '%s'" % (ss.name))
 			if s.GetLoadAddress(self.target) != 0xFFFFFFFFFFFFFFFF:
 				break
-			print("Invalid load address for  '%s'" % (s.name))
+			print("Invalid load address for	 '%s'" % (s.name))
 		return s.GetLoadAddress(self.target)
 
 	def getTime(self):
@@ -1045,7 +1133,8 @@ class Tool(Util):
 		elif self.args.threadn or self.args.threadm:
 			t.printWordsFromStack(
 				int(self.args.threadn or self.args.threadm, 10))
-		elif self.args.thread or self.args.fa or self.args.callsites:
+		elif self.args.thread or self.args.fa or self.args.callsites or\
+				 self.args.hex:
 			t.printWordsFromStack(t.process.selected_thread)
 		elif self.args.threads:
 			t.printStacks()
@@ -1061,7 +1150,283 @@ class Tool(Util):
 			t.printRegions()
 		if not (self.args.modules or self.args.absent):
 			if self.args.stat:
-			   	t.printModules(self)
+					t.printModules(self)
+
+def icu(ptr, sbp, err):
+	"""
+	size=64 name=icu_66::UnicodeString
+	+0-8			icu_66::Replaceable
+	+-0-8			 icu_66::UObject
+	+--0-1			icu_66::UMemory
+	+8-64			fUnion icu_66::UnicodeString::StackBufferOrFields
+	+-8-64		 fStackFields icu_66::UnicodeString::StackBufferOrFields::unnamed
+	+--8-10			fLengthAndFlags short
+	+--10-64		fBuffer char16_t[27]
+	+-8-32		 fFields icu_66::UnicodeString::StackBufferOrFields::unnamed
+	+--8-10			fLengthAndFlags short
+	+--12-16		fLength int
+	+--16-20		fCapacity int
+	+--24-32		fArray char16_t *
+	"""
+	buf = sbp.ReadMemory(ptr, 64, err)
+	if err.fail:
+		return
+	flags, length2, capacity, start = struct.unpack("HxxiixxxxP", buf[8:32])
+	if flags & 0x8000:
+		length = length2
+	else:
+		length = flags>>5
+	# print("length=%d"	 % length)
+	# Length in 2byte chars
+	if flags & 2:
+		bb = bytes(buf[10:10+length*2])
+	else:
+		bb = sbp.ReadMemory(start, length*2, err)
+	return err.success and bytes(bb).decode("utf-16", errors="replace")
+
+def icuOrError(a0, sbp):
+	err = lldb.SBError()
+	us = icu(a0, sbp, err)
+	return err.fail and err or repr(us)
+
+class DataPrintoutContext(Util):
+	def __init__(self):
+		self.error = lldb.SBError()
+		self.valName = None
+		self.filter = self.negFilter = None
+		
+	def detectTypeGetName(self, a0, sbt):
+		# print("self.filter=%s" % self.filter)
+		vtb0 = sbt.process.ReadPointerFromMemory(a0, self.error)
+		if not self.filter:
+			self.check(None)
+		if not self.error.fail:
+			vtbl = sbt.ResolveLoadAddress(vtb0)
+			sc = sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
+				vtbl, 255 | lldb.eSymbolContextVariable)
+			0 and print("vtb0=%x sc='%s' cu='%s' %s" % (
+				vtb0, sc, sc.GetCompileUnit(), sc.symbol))
+			pp = str(sc.symbol.name).split(" for ")
+			if (len(pp) > 1):
+				return pp[1]
+		# Sometimes can't resolve vtable - check for desstructor
+		dest0 = self.check(sbt.process.ReadPointerFromMemory(vtb0, self.error))
+		destr = lldb.SBAddress(dest0, sbt)
+		name = destr.symbol.name
+		if not name or not "~" in name:
+			print("Not a destructor '%s' at %s" % (name, xx(dest0)))
+			return
+		return name.split("~")[0][:-2]
+
+	def getValue(self, a0, sbt, typeName=None):
+		if not typeName:
+			typeName = self.detectTypeGetName(a0, sbt)
+			if not typeName:
+				# Error message must have been printed by detectTypeGetName
+				return
+		types = sbt.modules[0].FindTypes(typeName)
+		if len(types) != 1:
+			print("%d types '%s'" % (len(types), typeName))
+		if len(types) == 0:
+			return
+		addr = lldb.SBAddress(a0, sbt)
+		return sbt.CreateValueFromAddress(
+			self.valName or ("*"+typeName), addr, types.GetTypeAtIndex(0))
+		
+	def printValue(self, val, trail):
+		indent=None
+		if len(trail) > 40:
+			print("%s%s level too big" % (len(trail), val.name))
+			return
+		type = val.GetType()
+		if self.negFilter:
+			if val.name and re.search(self.negFilter, val.name):
+				return
+			if type.name and re.search(self.negFilter, type.name):
+				return
+		if val.name != type.name:
+			trail = trail + [str(val.name).replace("[", "").replace("]", "")]
+		prefix = str(val.GetAddress()) + (indent or (" %s " % ".".join(trail)))
+		suppress = self.filter and not re.search(self.filter, prefix) and\
+			not re.search(self.filter, type.name)
+		name = "%s" % (val.GetType().name)
+		shortTrail = ".".join(trail)
+		if len(shortTrail) > 60:
+			shortTrail = "..." + shortTrail[-60:]
+		# sys.stdout.write("\r%s %s" % (val.GetAddress(), shortTrail))
+		summary = val.GetSummary() or val.GetValue()
+		nc = 0
+		if 0 and type.IsPointerType():
+			dpc = DataPrintoutContext()
+			dpc.valName = "*" + val.name
+			a0 = val.GetValueAsUnsigned()
+			if a0:
+				try:
+					nv = dpc.getValue(a0, val.GetTarget())
+					if nv:
+						val = nv
+						type = val.GetType()
+				except DebuggerError:
+					pass
+		if not type.IsPointerType():
+			nc = val.GetNumChildren()
+		if 0 == nc or summary:
+			if not summary:
+				err = lldb.SBError()
+				num = val.GetValueAsUnsigned(err)
+				if type.IsPointerType():
+					num = xx(num)
+				summary = err.fail and ("error: %s" % err) or num
+			if not suppress:
+				print("\r%s%s = %s" % (prefix, name, summary))
+		# char buffers has contents in the summary
+		if nc and not type.name in summaryIsEnoughList and\
+			 not type.name.startswith("char[") and\
+			 not type.name.startswith("char16_t["):
+			if not suppress:
+				print("%s%s has %d children" % (prefix, name, nc))
+			for ii in range(nc):
+				nv = val.GetChildAtIndex(ii)
+				self.printValue(nv, trail)
+
+
+summaryIsEnoughList = ["KString"]
+
+def printType(debugger, command, result, internal_dict):
+	"""
+	Print TYPE object at ADDR. If TYPE not given or "*", detect it
+	by vtable. 
+	"""
+	commandArguments = re.split(r"\s+", command)
+	if not (len(commandArguments) in [1,2,3,4]):
+		print("usage: dt ADDR [TYPE] [REGEXP] [REGEXP_NEGATIVE]")
+		return
+	addrt = commandArguments[0]
+	if "," in addrt:
+		a0 = int("".join(commandArguments[0].split(",")), 16)
+	else:
+		a0 = int(addrt, 0)
+	sbt = debugger.GetSelectedTarget()
+	dpc = DataPrintoutContext()
+	dpc.filter = (len(commandArguments) >= 3) and re.compile(commandArguments[2])
+	dpc.negFilter = (len(commandArguments) >= 4) and\
+		re.compile(commandArguments[3])
+	if len(commandArguments) == 1:
+		typeName = None
+	else:
+		typeName = commandArguments[1]
+		if "*" == typeName:
+			typeName = None
+	val = dpc.getValue(a0, sbt, typeName)
+	data = val.GetData()
+	print("data=%s" % (data))
+	dpc.printValue(val, [])
+
+def printIcu(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command)
+	for arg in commandArguments:
+		err = lldb.SBError()
+		a0 = int(arg, 0)
+		us = icu(a0, debugger.GetSelectedTarget().process, err)
+		print(" %s %s" % (xx(a0), err.fail and err or repr(us)))
+
+def summaryIcu(val, internal_dict):
+	rs = icuOrError(val.GetLoadAddress(), val.GetProcess())
+	if len(rs) > 128:
+		rs = "..." + rs[-128:]
+	return rs
+
+class SyntheticVal:
+	def __init__(self, val, internal_dict):
+		self.val = val
+		self.vt = val.GetChildMemberWithName("type").GetValue()
+		
+	def num_children(self, max):
+		if self.vt in ["TYPE_UNDEFINED", "TYPE_NUMBER"]:
+			return 0
+		return 1
+	
+	def get_child_at_index(self, index):
+		# Doesn't work
+		# return self.val.GetValueForExpressionPath(".obj")
+		if "TYPE_LOGICAL" == self.vt:
+			return self.val.GetChildMemberWithName("logical_")
+		if "TYPE_STACK_FUNCT" == self.vt:
+			return self.val.GetChildMemberWithName("funInfo").Dereference()
+		if "TYPE_NUMBER" == self.vt:
+			return self.val.GetChildMemberWithName("value")
+		dpc = DataPrintoutContext()
+		objAddr = dpc.check(self.val.GetProcess().ReadPointerFromMemory(
+			self.val.GetLoadAddress() + 8, dpc.error))
+		if 0 == objAddr:
+			return 0
+		try:
+			return dpc.getValue(objAddr, self.val.GetTarget())
+		except DebuggerError as e:
+			return str(e)
+
+class SyntheticFsi:
+	def __init__(self, val, internal_dict):
+		self.val = val
+	
+	def num_children(self, max):
+		return 1
+	
+	def get_child_at_index(self, index):
+		pcallee = self.val.GetChildMemberWithName("vars").\
+			GetChildMemberWithName("callee").\
+			GetChildMemberWithName("_ptr").GetValueAsUnsigned()
+		dpc = DataPrintoutContext()
+		return dpc.getValue(pcallee, self.val.GetTarget())
+
+def summaryVal(val, internal_dict):
+	val = val.GetNonSyntheticValue()
+	vt = val.GetChildMemberWithName("type")
+	if vt.GetValue() == "TYPE_NUMBER":
+		vv = val.GetChildMemberWithName("value")
+	else:
+		return "type=%s" % vt.GetValue()
+	return "type=%s v=%s" % (vt.GetValue(), vv.GetValue())
+
+class SyntheticVmv:
+	def __init__(self, val, internal_dict):
+		self.val = val
+	
+	def num_children(self, max):
+		return 1
+	
+	def get_child_at_index(self, index):
+		pcallee = self.val.\
+			GetChildMemberWithName("callee").\
+			GetChildMemberWithName("_ptr").GetValueAsUnsigned()
+		dpc = DataPrintoutContext()
+		dpc.valName = "callee"
+		return dpc.getValue(pcallee, self.val.GetTarget())
+
+
+def __lldb_init_module(debugger, internal_dict):
+	"To load: command script import ~/stuff/crashtools.py"
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printType dt" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printIcu icu" % __name__)
+	debugger.HandleCommand(
+		"type summary add -F %s.summaryIcu KString" % __name__)
+	debugger.HandleCommand(
+		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
+	debugger.HandleCommand(
+		"type summary add -F %s.summaryVal Val" % __name__)
+	debugger.HandleCommand(
+		"type synthetic add Val --python-class %s.SyntheticVal" %
+		__name__)
+	if 0:
+		debugger.HandleCommand(
+			"type synthetic add FunStackInfo --python-class %s.SyntheticFsi" %
+			__name__)
+	debugger.HandleCommand(
+		"type synthetic add __VMvars --python-class %s.SyntheticVmv" %
+		__name__)
+	print("%s loaded" % __name__) 
 
 if __name__ == "__main__":
 	# This makes my Mac (standard LLDB package) segfault 
@@ -1069,3 +1434,5 @@ if __name__ == "__main__":
 		import codecs
 		sys.stdout = codecs.getwriter("utf-8")(sys.stdout)
 	Tool(parser.parse_args(), None).run()
+
+	

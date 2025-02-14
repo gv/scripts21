@@ -250,11 +250,15 @@
 (define-key global-map (kbd "s-s") 'grep)
 (define-key global-map (kbd "s-d") 'vg-goto-git-root)
 (defun vg-goto-git-root () (interactive)
- (find-file
-  (locate-dominating-file
-   (if (buffer-file-name)
-	(file-name-directory (buffer-file-name))
-	default-directory) ".git")))
+ (let* ((src
+		 (if (buffer-file-name)
+		  (file-name-directory (buffer-file-name))
+		  default-directory))
+		(root (locate-dominating-file src ".git")))
+  (if root
+   (find-file root)
+   (vg-message "'.git' directory not found for '%s'" src))))
+
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
 (define-key global-map [s-down] 'next-error)
@@ -410,7 +414,7 @@ and starts new compile. Alternatively, start new compile as
   (format "\"%s\""
    (string-trim (buffer-substring-no-properties
 				 (region-beginning) (region-end))))
-  (find-tag-default)))
+  (or (find-tag-default) "")))
 
 (defun google-at-point () (interactive)
  (Vg-search-at-point "https://www.google.com/search?q=%s"))
@@ -683,12 +687,19 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'compilation-error-regexp-alist-alist
  '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
 (add-to-list 'compilation-error-regexp-alist 'asan)
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
+(add-to-list 'compilation-error-regexp-alist 'node)
 
 (defun Vg-get-local-search-command (query)
- (format
-  (if (equal window-system 'ns)
+ (if (equal window-system 'ns)
+  (format
    "mdfind %s"
-   "tracker search --limit=999 --disable-color %s") query)) 
+   (replace-regexp-in-string "\"\\(.+?\\)\"" "'\"\\1\"'" 
+	query))
+  (format
+   "tracker search --limit=999 --disable-color %s") query))
+
 
 (defun tracker-search () (interactive)
  (Vg-reset-dialog 'tracker-search)
@@ -713,15 +724,16 @@ and starts new compile. Alternatively, start new compile as
 		(lambda (b result)
 		 (insert "\nSearch URLs:\n\n")
 		 (Vg-ins-search-url "s" query
-		  "https://www.google.com/search?q=%s")
+		  "https://www.google.com/search?q=%s" "")
 		 (Vg-ins-search-url "u" query
-		  "https://www.youtube.com/results?search_query=%s")
+		  "https://www.youtube.com/results?search_query=%s"
+		  " -\"hey delphi\" -\"Roel Van de Paar\"")
 		 (pop-to-buffer (current-buffer)))
 		compilation-finish-functions))))
 	(funcall revert-buffer-function)))))
 
-(defun Vg-ins-search-url (key query template)
- (let ((url (format template (url-hexify-string query))))
+(defun Vg-ins-search-url (key query template add)
+ (let ((url (format template (url-hexify-string (concat query add)))))
   (insert (format "[%s] %s\n" key url))
   (define-key compilation-mode-map key
    (lambda () (interactive) (vg-open url)))))

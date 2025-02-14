@@ -46,15 +46,19 @@ parser.add_argument(
 	"--expand", "-x", action="append",
 	help="Hanlde object/lib names containing substring as separate sources")
 parser.add_argument(
-	"--git", help="Get file list + contents form REVISION (-f)")
-parser.add_argument("--ds", action="store_true", help="Dump symbols")
+	"--git", help="Get file list + contents from REVISION (-f)")
 parser.add_argument(
 	"--calls", action="store_true", help="Get function calls (non virtual)")
+parser.add_argument(
+	"--ctms", help="Call target maximum size")
 parser.add_argument(
 	"--functions", action="store_true",
 	help="Get function symbol sizes and repeat counts")
 parser.add_argument(
 	"--all", action="store_true", help="Print symbol data")
+parser.add_argument(
+	"--data", action="store_true", help="Print non code symbols")
+parser.add_argument("--ds", action="store_true", help="Dump symbols")
 parser.add_argument(
 	"--sfp", action="store_true",
 	help="Print function that use push bp/mov bp, sp")
@@ -64,7 +68,11 @@ parser.add_argument(
 	"--containing", "-I", action="store_true",
 	help="List all types whose names contain PREFIX")
 parser.add_argument(
-	"--recurse", "-r", action="store_true", help="List fields in pointer types")
+	"--derived", "-d", action="store_true",
+	help="List all classes derived from PREFIX (1 arg)")
+parser.add_argument(
+	"--md", action="store_true",
+	help="List all classes multiply derived from PREFIX (1 arg)")
 parser.add_argument(
 	"--target", "-t", action="store_true",
 	help="TODO Find paths to targets in a call graph")
@@ -89,11 +97,11 @@ def xx(n):
 	return ",".join(re.findall(r"[0-9a-fA-F]{1,4}", n[::-1]))[::-1]
 
 class Count:
-	__slots__ = ("name", "size")
+	__slots__ = ("name", "size", "occurences")
 	
 	def __init__(self, value):
 		self.name = value
-		self.size = 0
+		self.occurences = self.size = 0
 
 	def __lt__(self, other):
 		return self.size < other.size
@@ -217,6 +225,8 @@ class Input:
 				nn(sec.GetFileByteSize())))
 
 	def run(self, up):
+		if self.args.containing or self.args.derived or self.args.md:
+			self.args.types = True
 		if self.args.types:
 			return self.printTypes(self.args.PREFIX)
 		# GetStartAddress()/GetEndAddress() can be .o section addresses
@@ -265,33 +275,74 @@ class Input:
 				up.processEntry(e, size, self, None)
 				up.progress(size)
 
-	def printFields(self, prefix, offset, type, printed):
-		printed.add(type.name)
-		allFields = [
+	def printFields(self, prefix, deriveds, offset, type):
+		bases = [
 			type.GetDirectBaseClassAtIndex(i)
-			for i in range(type.num_bases)] + [
+			for i in range(type.GetNumberOfDirectBaseClasses())]
+		# Location of virtual base is determined by most derived class,
+		# virtual bases of bases are not present in final layout.
+		# If we have a virtual base, all derived classes contain it too
+		# TODO:
+		# The class that declares ": public virtual" has the base in
+		# the direct bases for some reason - although the offsets are
+		# used by other fields in bases. Need to filter that out
+		fields = [
 			type.GetFieldAtIndex(i)
-			for i in range(type.num_fields)]
-		for fl in allFields:
-			name = fl.name
-			ft = fl.GetType().GetCanonicalType()
-			if ft.name and name and name != ft.name:
-				name += " " + ft.name
-			start = offset + fl.GetOffsetInBytes()
-			print("%s%-8s %s" % (
-				prefix, "%d-%d" % (start, start + ft.size), name))
-			self.printFields(prefix + "-", start, ft, printed)
-			if self.args.recurse and ft.IsPointerType():
-				if ft.GetPointeeType().name in printed:
-					continue
-				self.printFields(prefix + " ", ft.GetPointeeType(), printed)
+			for i in range(type.num_fields) ]
+		if not deriveds:
+			for i in range(type.GetNumberOfVirtualBaseClasses()):
+				vb = type.GetVirtualBaseClassAtIndex(i)
+				fields.append(vb)
+		for fl in bases:
+			self.printOneField(prefix, deriveds + [type], offset, fl)
+		for fl in sorted(fields, key=lldb.SBTypeMember.GetOffsetInBytes):
+			self.printOneField(prefix, [], offset, fl)
+
+	def printOneField(self, prefix, nds, offset, fl):
+		name = fl.name
+		ft = fl.GetType().GetCanonicalType()
+		if ft.name and name and name != ft.name:
+			name += " " + ft.name
+		start = offset + fl.GetOffsetInBytes()
+		print("%s%-8s %s" % (
+			prefix, "%d-%d" % (start, start + ft.size), name))
+		self.printFields(prefix + "-", nds, start, ft)
+
+	def getDerivationPath(self, type, baseName, includeVirt=True):
+		# Include type itself so we see if the name can't be found
+		if type.name == baseName:
+			return [type]
+		for i in range(type.GetNumberOfDirectBaseClasses()):
+			bt = type.GetDirectBaseClassAtIndex(i).GetType().GetCanonicalType()
+			dp = self.getDerivationPath(bt, baseName)
+			if dp:
+				return dp + [type]
+		if not includeVirt:
+			return
+		for i in range(type.GetNumberOfVirtualBaseClasses()):
+			bt = type.GetVirtualBaseClassAtIndex(i).GetType().GetCanonicalType()
+			if bt.name == baseName:
+				return [bt, type]
+
+	def getForkedDerivationPaths(self, type, baseName):
+		if type.name == baseName:
+			return [[type]]
+		for i in range(type.GetNumberOfDirectBaseClasses()):
+			bt = type.GetDirectBaseClassAtIndex(i).GetType().GetCanonicalType()
+			p = self.getDerivationPath(bt, baseName, includeVirt=False)
+			if p:
+				yield p
 				
 	def printTypes(self, strings):
+		if self.args.derived and len(strings) != 1:
+			raise Exception("Only 1 class name supported for --derived")
+		if self.args.md and len(strings) != 1:
+			raise Exception("Only 1 class name supported for --md")
 		printed = set()
-		if not self.args.containing:
+		if not (self.args.containing or self.args.derived or self.args.md):
 			for name in strings:
 				for t in self.module.FindTypes(name):
-					self.printOneType(t)
+					self.printOneType(t, printed, needFields=True)
 			return
 		for i in range(self.module.GetNumCompileUnits()):
 			u = self.module.GetCompileUnitAtIndex(i)
@@ -302,23 +353,39 @@ class Input:
 				if t.IsPointerType() or t.IsReferenceType() or t.size == 0:
 					continue
 				# Go from typedef name to real name
-				t = t.GetCanonicalType() 
-				found = False
+				t = t.GetCanonicalType()
+				if self.args.derived:
+					dp = self.getDerivationPath(t, strings[0])
+					if dp:
+						self.printOneType(t, printed, dp=dp[:-1])
+					continue
+				if self.args.md:
+					dp = list(self.getForkedDerivationPaths(t, strings[0]))
+					if len(dp) > 1:
+						self.printOneType(t, printed, dps=dp)
+					continue
 				for st in strings:
 					found = st in t.name
 					if found:
+						self.printOneType(t, printed, needFields=True)
 						break
-				if not found:
-					continue
-				k = "%d:%s" % (t.size, t.name)
-				if k in printed:
-					continue
-				printed.add(k)
-				self.printOneType(t)
 
-	def printOneType(self, t):
-		print("\rsize=%d name=%s" % (t.size, t.name))
-		self.printFields("+", 0, t, set())
+	def wasTypePrinted(self, t, printed):
+		k = "%d:%s" % (t.size, t.name)
+		if k in printed:
+			return True
+		printed.add(k)
+		return False
+	
+	def printOneType(self, t, printed, dp=[], needFields=False, dps=[]):
+		if self.wasTypePrinted(t, printed):
+			return
+		dpNames = "".join([(y.name + "/") for y in dp])
+		print("\rsize=%4d %s%s" % (t.size, dpNames, t.name))
+		for dp in dps:
+			print("  " + "".join([(y.name + "/") for y in dp]))
+		if needFields:
+			self.printFields("+", [], 0, t)
 
 	def descAddr(self, addr):
 		return "%s:%016X" % (
@@ -332,13 +399,16 @@ class Input:
 			e.GetEndAddress().GetOffset() - e.GetStartAddress().GetOffset(),
 			e.GetFileSpec(), e.GetLine()))
 
-	def getFunctions(self, context):
+	def getSymbols(self, context):
 		for s in self.module.symbols:
 			context.symbols.size += 1
 			if s.GetStartAddress().IsValid():
 				isFunc = int(s.GetStartAddress().GetSection().name == ".text")
 				context.functions.size += isFunc
-				if self.args.all or isFunc:
+				if self.args.data:
+					if not isFunc:
+						context.processSymbol(s)
+				elif self.args.all or isFunc:
 					context.processSymbol(s)
 			else:
 				context.noAddress.size += 1
@@ -520,7 +590,8 @@ class Context:
 		self.accounted.size += size
 
 	def report(self):
-		self.reportCounts(self.prefixes + self.getCounts())
+		if not self.args.types:
+			self.reportCounts(self.prefixes + self.getCounts())
 
 	def getCounts(self):
 		counts = [
@@ -747,7 +818,7 @@ class SymbolStat:
 		self.size = Calls.getSize(None, symbol)
 		self.count = 0
 
-	def getTotalSize(self):
+	def getCumulativeSize(self):
 		return self.count * self.size
 
 	def getCount(self):
@@ -755,14 +826,13 @@ class SymbolStat:
 
 class Calls(Context):
 	def prepare(self, inputs):
-		self.target = None
+		self.targets = []
 		if self.args.PREFIX:
-			if len(self.args.PREFIX) > 1:
-				raise Exception("--calls only 1 target supported")
-			# TODO:
-			# 1 target might still be multiple locations if inlined
-			# Just store a symbol name for now
-			self.target = self.args.PREFIX[0]
+			for px in self.args.PREFIX:
+				self.targets.append(Count(px))
+		self.callTargetMaxSize = 0
+		if self.args.ctms:
+			self.callTargetMaxSize = int(self.args.ctms)
 		self.symbolInfo = {}
 		self.unknown = self.unknownSrc = Count("<unknown source>")
 		self.unknownTgt = Count("<unknown target>")
@@ -776,8 +846,8 @@ class Calls(Context):
 		self.sfp = Count("<stack frame used>")
 		for input in inputs:
 			if self.args.functions or self.args.all or\
-				 self.args.ds or self.args.sfp:
-				input.run = input.getFunctions
+				 self.args.ds or self.args.sfp or self.args.data:
+				input.run = input.getSymbols
 			else:
 				input.run = input.getInstructions
 				sec = input.getCodeSection()
@@ -855,9 +925,24 @@ class Calls(Context):
 			src = ins.addr.symbol.name or "<unknown>"
 		if not arg.symbol.name:
 			self.unknownTgt.size += 1
-		if (not self.target) or\
-			(arg.symbol.name and self.target in arg.symbol.name):
-				self.printCall(src, ins, arg)
+		if not self.targets and not self.callTargetMaxSize:
+			self.printCall(src, ins, arg)
+			return
+		if arg.symbol.name:
+			if self.callTargetMaxSize:
+				if self.getSize(arg.symbol) <= self.callTargetMaxSize:
+					found = False
+					for count in self.targets:
+						if count.name in arg.symbol.name:
+							found = True
+							break
+					if not found:
+						self.targets.append(Count(arg.symbol.name))
+			for count in self.targets:
+				if count.name in arg.symbol.name:
+					self.printCall(src, ins, arg)
+					count.size += 1
+					break
 
 	def getLocation(self, addr, fmt):
 		le = addr.line_entry
@@ -867,16 +952,17 @@ class Calls(Context):
 			KeyFromSpec(self, le.GetFileSpec()).getPath(), le.GetLine())
 		
 	def report(self):
-		if not (self.args.functions or self.args.all or self.args.sfp):
+		if not (
+				self.args.functions or self.args.all or
+				self.args.sfp or self.args.data):
 			self.reportCounts([
 				self.unknownSrc, self.unknownTgt, self.calls,
-				self.instructions])
+				self.instructions] + self.targets)
 			return
 		functions = self.symbolInfo.values()
 		if not self.args.sfp:
-			if self.args.verbose:
-				sys.stderr.write("Sorting %d functions...\n" % len(functions))
-			for s in sorted(functions, key=SymbolStat.getCount):
+			sys.stdout.write("Sorting %d functions...\n" % len(functions))
+			for s in sorted(functions, key=SymbolStat.getCumulativeSize):
 				print("%10s %s" % (
 					"%d*%d" % (s.size, s.count), s.name))
 		self.reportCounts([
@@ -1039,8 +1125,8 @@ elif args.target:
 elif args.show:
 	r = Show(args).run()
 else:	
-	((args.all or args.calls or args.functions or args.ds or args.sfp) and\
-	 Calls or\
+	((args.all or args.calls or args.functions or args.ds or
+		args.sfp or args.data) and Calls or\
 	 args.map and Maps or args.file and Lines or Context)(args).run() 
 sys.stderr.write("%s done in %s\n" % (
 	__file__, datetime.datetime.now() - take_off))
