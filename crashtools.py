@@ -135,6 +135,9 @@ def hexDumpMem(process, start, end, error):
 		sys.stdout.write("\n")
 		start += lsize
 
+def printSize(count, name):
+	print("%20s %s" % (nn(getattr(count, name.lower())), name))
+
 ptrSize = 8
 
 class Count:
@@ -377,6 +380,9 @@ class UnwindFrame(CallSite):
 			self.describeAddr(pc)))
 		sys.stdout.flush()
 
+class MemTypeCount:
+	def __init__(self):
+		self.heap = self.stack = 0
 
 class Target(Util):
 	def __init__(self, args, debugger):
@@ -728,13 +734,33 @@ class Target(Util):
 
 	def describeName(self, path):
 		bn = os.path.basename(path)
-		return len(bn) < 40 and bn or bn[:40] + "..."
+		return len(bn) < 32 and bn or bn[:32] + "..."
 
 	def getThreadWithStackInRegion(self, r):
 		for th in self.process.threads:
 			sp = th.frames[0].sp
 			if sp >= r.GetRegionBase() and sp < r.GetRegionEnd():
 				return th
+
+	def countMemoryByType(self):
+		mc = MemTypeCount()
+		regions = self.process.GetMemoryRegions()
+		sbr = lldb.SBMemoryRegionInfo()
+		for i in range(regions.GetSize()):
+			if not regions.GetMemoryRegionAtIndex(i, sbr):
+				raise Exception("TODO")
+			if not sbr.IsReadable() or not sbr.IsWritable() or sbr.IsExecutable():
+				continue
+			size = sbr.GetRegionEnd() - sbr.GetRegionBase()
+			if self.getThreadWithStackInRegion(sbr):
+				mc.stack += size
+			else:
+				mc.heap += size
+		return mc
+
+	def scanForVtables(self):
+		mc = self.countMemoryByType()
+		raise Exception("TODO")
 
 	def printRegions(self):
 		class Count:
@@ -763,10 +789,10 @@ class Target(Util):
 		for i in range(regions.GetSize()):
 			if not regions.GetMemoryRegionAtIndex(i, r):
 				raise Exception("TODO")
+			size = r.GetRegionEnd() - r.GetRegionBase()
 			name = r.GetName()
 			if name:
 				name = os.path.basename(name)
-			size = r.GetRegionEnd() - r.GetRegionBase()
 			if self.args.scan and not r.IsReadable(): # or r.IsExecutable():
 				continue
 			th = self.getThreadWithStackInRegion(r)
@@ -779,7 +805,7 @@ class Target(Util):
 				(r.IsMapped() and "m" or "."),
 				xr(r.GetRegionBase(), r.GetRegionEnd()),
 				name and (" '%s'" % name) or "",
-				th and (" Stack%s" % th.GetIndexID()) or ""))
+				th and (" S%s" % th.GetIndexID()) or ""))
 			if self.args.scan:
 				count.readable += 1
 				# self.error.Clear() doesn't work
@@ -814,6 +840,9 @@ class Target(Util):
 			print("Scanned %s/%s, %d errors of %d regions (%d readable)" %
 						(nn(count.scanned), nn(count.total),
 						 count.errors, regions.GetSize(), count.readable))
+		mc = self.countMemoryByType()
+		printSize(mc, "Heap")
+		printSize(mc, "Stack")
 			
 
 	def replaceModuleFromStorage(self, m):

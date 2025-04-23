@@ -63,7 +63,12 @@ parser.add_argument(
 	"--sfp", action="store_true",
 	help="Print function that use push bp/mov bp, sp")
 parser.add_argument(
-	"--types", action="store_true", help="List types & exit")
+	"--types", "-T", action="store_true", help="Print type member layout")
+parser.add_argument(
+	"--longtype", "-L", action="store_true",
+	help="Print type member layout as path expressions")
+parser.add_argument(
+	"--onlybases", action="store_true", help="Print only bases")
 parser.add_argument(
 	"--containing", "-I", action="store_true",
 	help="List all types whose names contain PREFIX")
@@ -95,6 +100,11 @@ def nn(n):
 def xx(n):
 	n = "%X" % n
 	return ",".join(re.findall(r"[0-9a-fA-F]{1,4}", n[::-1]))[::-1]
+
+def printComparison(s1, s2, name):
+	print(" %24s  %s" % (
+		"%s(%s%s)" % (
+			nn(s1), (s2 > s1) and "+" or "-", nn(s2-s1)), name))
 
 class Count:
 	__slots__ = ("name", "size", "occurences")
@@ -192,9 +202,7 @@ class Input:
 			s1, s2 = (
 				m.get(name) and m.get(name).GetFileByteSize() or 0 for
 				m in (map1, map2))
-			print(" %30s  %s" % (
-				"%s(%s%s)" % (
-					nn(s1), (s2 > s1) and "+" or "-", nn(s2-s1)), name))
+			printComparison(s1, s2, name)
 
 	def getCodeSection(self):
 		if self.cs:
@@ -225,7 +233,8 @@ class Input:
 				nn(sec.GetFileByteSize())))
 
 	def run(self, up):
-		if self.args.containing or self.args.derived or self.args.md:
+		if self.args.containing or self.args.derived or self.args.md or\
+			 self.args.longtype or self.args.onlybases:
 			self.args.types = True
 		if self.args.types:
 			return self.printTypes(self.args.PREFIX)
@@ -286,24 +295,38 @@ class Input:
 		# The class that declares ": public virtual" has the base in
 		# the direct bases for some reason - although the offsets are
 		# used by other fields in bases. Need to filter that out
-		fields = [
-			type.GetFieldAtIndex(i)
-			for i in range(type.num_fields) ]
+		fields = []
+		if not self.args.onlybases:
+			for i in range(type.num_fields):
+				fl = type.GetFieldAtIndex(i)
+				fl.isVirt = ""
+				fl.deriveds = []
+				fields.append(fl)
 		if not deriveds:
 			for i in range(type.GetNumberOfVirtualBaseClasses()):
 				vb = type.GetVirtualBaseClassAtIndex(i)
+				vb.isVirt = "(v)";
+				vb.deriveds = []
 				fields.append(vb)
 		for fl in bases:
-			self.printOneField(prefix, deriveds + [type], offset, fl)
-		for fl in sorted(fields, key=lldb.SBTypeMember.GetOffsetInBytes):
-			self.printOneField(prefix, [], offset, fl)
+			fl.isVirt = "";
+			fl.deriveds = deriveds + [type]
+		for fl in sorted(fields + bases, key=lldb.SBTypeMember.GetOffsetInBytes):
+			self.printOneField(prefix, fl.deriveds, offset, fl)
 
 	def printOneField(self, prefix, nds, offset, fl):
 		name = fl.name
 		ft = fl.GetType().GetCanonicalType()
 		if ft.name and name and name != ft.name:
-			name += " " + ft.name
+			name = "%s %s" % (ft.name, name)
+		if name:
+			name += fl.isVirt
 		start = offset + fl.GetOffsetInBytes()
+		if self.args.longtype:
+			prefix = "%s.%s" % (prefix, name)
+			print("%d-%d %s" % (start, start + ft.size, prefix))
+			self.printFields(prefix, nds, start, ft)
+			return
 		print("%s%-8s %s" % (
 			prefix, "%d-%d" % (start, start + ft.size), name))
 		self.printFields(prefix + "-", nds, start, ft)
@@ -1105,12 +1128,32 @@ class Show:
 		for input in self.inputs:
 			input.printContent(path, line)
 
-class Diff(Show):
+class Diff(Calls):
 	def run(self):
 		if len(self.args.PREFIX) != 2:
 			raise Exception("Must have 2 arguments")
 		i1, i2 = (Input(x, self.args) for x in self.args.PREFIX)
+		self.prepare([])
 		i1.compareSections(i2)
+		print("---------")
+		self.map1 = self.map = {}
+		i1.getSymbols(self)
+		self.map2 = self.map = {}
+		i2.getSymbols(self)
+		self.report()
+
+	def report(self):
+		for name, l2 in self.map2.items():
+			if l1 := self.map1.get(name, 0):
+				del self.map1[name]
+			if l1 == l2:
+				continue
+			printComparison(l1, l2, name)
+		for name, l1 in self.map1.items():
+			printComparison(l1, 0, name)
+
+	def processSymbol(self, s):
+		self.map[s.name] = self.map.get(s.name, 0) + self.getSize(s)
 
 if sum(int(not not x) for x in (
 		args.target, args.show, args.diff, args.file, args.calls, args.map)) > 1:
