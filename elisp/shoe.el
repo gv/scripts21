@@ -410,11 +410,11 @@ and starts new compile. Alternatively, start new compile as
    (vg-message "No names at point"))))
 
 (defun Vg-current-word-or-selection ()
- (if (use-region-p)
   (format "\"%s\""
-   (string-trim (buffer-substring-no-properties
-				 (region-beginning) (region-end))))
-  (or (find-tag-default) "")))
+   (if (use-region-p)
+	(string-trim (buffer-substring-no-properties
+				  (region-beginning) (region-end)))
+	(or (find-tag-default) ""))))
 
 (defun google-at-point () (interactive)
  (Vg-search-at-point "https://www.google.com/search?q=%s"))
@@ -615,7 +615,7 @@ and starts new compile. Alternatively, start new compile as
  (highlight-regexp "[[:nonascii:]]")
  (when
   (string-match
-   "\\(py\\|cpp\\|h\\|txt\\|Makefile\\)$" buffer-file-name)
+   "\\(py\\|cpp\\|h\\|txt\\|Makefile\\|Kconfig\\)$" buffer-file-name)
   (compact-blame-mode)))
 
 (defun tune-dabbrev ()
@@ -625,7 +625,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'shell-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
- (Vg-classify-as-punctuation "+$/'")
+ (Vg-classify-as-punctuation "+$/'|")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -724,16 +724,18 @@ and starts new compile. Alternatively, start new compile as
 		(lambda (b result)
 		 (insert "\nSearch URLs:\n\n")
 		 (Vg-ins-search-url "s" query
-		  "https://www.google.com/search?q=%s" "")
-		 (Vg-ins-search-url "u" query
-		  "https://www.youtube.com/results?search_query=%s"
-		  " -\"hey delphi\" -\"Roel Van de Paar\"")
+		  "https://www.google.com/search?q=%s")
+		 (Vg-ins-search-url "u"
+		  (concat query " -\"hey delphi\" -\"Roel Van de Paar\"")
+		  "https://www.youtube.com/results?search_query=%s")
+		 (Vg-ins-search-url "h" query
+		  "https://github.com/search?q=%s&type=code")
 		 (pop-to-buffer (current-buffer)))
 		compilation-finish-functions))))
 	(funcall revert-buffer-function)))))
 
-(defun Vg-ins-search-url (key query template add)
- (let ((url (format template (url-hexify-string (concat query add)))))
+(defun Vg-ins-search-url (key query template)
+ (let ((url (format template (url-hexify-string query))))
   (insert (format "[%s] %s\n" key url))
   (define-key compilation-mode-map key
    (lambda () (interactive) (vg-open url)))))
@@ -783,7 +785,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'log-view-mode-hook 'vg-tune-log-view)
 
 (defun vg-tune-lisp ()
-  (Vg-classify-as-punctuation "@/:"))
+  (Vg-classify-as-punctuation "@/:|"))
 (add-hook 'emacs-lisp-mode-hook 'vg-tune-lisp)
 (add-hook 'tcl-mode-hook 'vg-tune-lisp)
 
