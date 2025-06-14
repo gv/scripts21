@@ -32,8 +32,9 @@
         alias y3="yp $vgYtdlFlags"
         alias yp9='python3.9 ~/src/yt-dlp/yt_dlp/__main__.py'
         alias y9="yp9 $vgYtdlFlags"
-        alias 12='scl enable gcc-toolset-12'
-        alias 13='scl enable gcc-toolset-13'
+        alias 12='scl enable gcc-toolset-12 --'
+        alias 13='scl enable gcc-toolset-13 --'
+        alias m1='zenity --info --text'
       
   - name: Disable ssh password
     tags: never

@@ -245,9 +245,20 @@
 ;; Need some Ctrl key for compile to easily go to C-r
 (define-key global-map "\C-d" 'compile)
 (define-key global-map (kbd "C-`") 'compile)
+(define-key global-map [s-f9] 'compile)
 ;; TODO `recompile` doesn't restore CWD of the last compile 
 (define-key global-map (kbd "s-y") 'recompile)
-(define-key global-map (kbd "s-s") 'grep)
+(define-key global-map (kbd "s-s")
+ (lambda () (interactive)
+  (let* ((src
+		  (if (buffer-file-name)
+		   (file-name-directory (buffer-file-name))
+		   default-directory))
+		 (root (locate-dominating-file src ".git")))
+   (grep-apply-setting 'grep-command
+	;; TODO: quote + resolve '~'
+	(format "cd %s && git grep --recurse-submodules -n " root)))
+  (command-execute 'grep)))
 (define-key global-map (kbd "s-d") 'vg-goto-git-root)
 (defun vg-goto-git-root () (interactive)
  (let* ((src
@@ -258,6 +269,11 @@
   (if root
    (find-file root)
    (vg-message "'.git' directory not found for '%s'" src))))
+(define-key global-map (kbd "M-s--") 'vg-up-dir)
+(define-key global-map [s-f11] 'vg-up-dir)
+(defun vg-up-dir () (interactive)
+ (let ((p (or (buffer-file-name) default-directory)))
+  (find-file (file-name-directory (directory-file-name p)))))
 
 (global-set-key (kbd "ESC <up>") 'previous-error)
 (define-key global-map [s-up] 'previous-error)
@@ -268,6 +284,7 @@
 
 (define-key global-map (kbd "s-l") 'vg-run-paragraph)
 (define-key global-map (kbd "C-l") 'vg-run-paragraph)
+(define-key global-map (kbd "M-l") 'vg-run-paragraph)
 (define-key global-map (kbd "C-.")
  (lambda () (interactive) (save-excursion (vg-run-line))))
 (defun vg-run-paragraph () (interactive)
@@ -685,7 +702,7 @@ and starts new compile. Alternatively, start new compile as
 
 (require 'compile)
 (add-to-list 'compilation-error-regexp-alist-alist
- '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
+ '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 1)) ; a warning
 (add-to-list 'compilation-error-regexp-alist 'asan)
 (add-to-list 'compilation-error-regexp-alist-alist
  '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
@@ -698,7 +715,7 @@ and starts new compile. Alternatively, start new compile as
    (replace-regexp-in-string "\"\\(.+?\\)\"" "'\"\\1\"'" 
 	query))
   (format
-   "tracker search --limit=999 --disable-color %s") query))
+   "tracker search --limit=999 --disable-color %s" query)))
 
 
 (defun tracker-search () (interactive)
@@ -730,6 +747,8 @@ and starts new compile. Alternatively, start new compile as
 		  "https://www.youtube.com/results?search_query=%s")
 		 (Vg-ins-search-url "h" query
 		  "https://github.com/search?q=%s&type=code")
+		 (Vg-ins-search-url "p" query
+		  "https://pkgs.org/search/?q=%s")
 		 (pop-to-buffer (current-buffer)))
 		compilation-finish-functions))))
 	(funcall revert-buffer-function)))))
@@ -826,7 +845,10 @@ and starts new compile. Alternatively, start new compile as
 (defun git-log (options) "Print log with options"
  (interactive "sGit log options: ")
  (let* ((bn "*git-log*") proc
-	   (cmd (append '("git" "log") (split-string options))))
+		(cmd (append
+			  (if (equal window-system 'x)
+			   '("systemd-inhibit" "--what=handle-lid-switch"))
+			  '("git" "log") (split-string options))))
   (require 'vc-git)
   (set-buffer (get-buffer-create bn))
   (setq-local revert-buffer-function

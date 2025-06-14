@@ -1,16 +1,17 @@
 # Flags for some of the stuff I build
 ALL_OUTPUT := $(CURDIR)
 O ?= $(ALL_OUTPUT)
-R := $(ALL_OUTPUT)/release
+R := $(ALL_OUTPUT)/release$(cf)$(vgccversion)
 HERE := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SRC := $(HERE)
 S := $(SRC)
 SHELL=/bin/bash -o pipefail
 MAKEFLAGS = -Rr
 b0 = $(shell uname -s)
-B = $(b0:Darwin=build)
+B = $(b0:Darwin=build)$(cf)$(vgccversion)
 tools0 = $(b0:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
 tools = $(tools0:Linux=)
+cflags = $(cf:-a=-fsanitize=address)
 
 # ---------- project specific options ----------
 
@@ -114,6 +115,14 @@ zsh%: options = --with-tcsetpgrp
 
 %emacs: options = --with-tiff=no --with-xpm=no --with-gnutls=no\
 	--with-jpeg=no --with-gif=no
+
+# If I use PKG_CONFIG_LIBDIR system packages are not found
+%network-manager-applet %nma1: options = -Dwwan=false -Dteam=false
+%network-manager-applet %nma1:\
+	envvars = PKG_CONFIG_PATH=$R/lib64/pkgconfig
+libnma%: options = -Dgcr=false -Dintrospection=false -Dvapi=false
+
+network-manager-applet.n: libnma.m
 
 #
 # To build with OS paths baked in:
@@ -280,7 +289,7 @@ _build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
 %.m:
 	$(MAKE) $*.install_
 
-%.install_: $R/%.installed.logc $(AFSCTOOL)
+%.install_: $R/%.installed.logc $(AFSCTOOL) $f
 	$(AFSCTOOL) -cfvvv $R
 	@echo $^ is up to date	
 
@@ -316,7 +325,7 @@ $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides) --trace) 2>&1 |\
+	(cd $O/$B.$* && $(MAKE) -w V=1 VERBOSE=1 $($*.overrides) --trace) 2>&1 |\
 		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
@@ -334,6 +343,7 @@ $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 	$(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* &&\
+		echo "vg: Entering directory '$$(pwd)'" &&\
 		PATH=$(tools)$(PATH)\
 		time $(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
 		tee $@.tmp.txt
@@ -349,12 +359,15 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
-	cd $O/$B.$* &&\
-		$($*.envvars) PATH=$(tools)$(PATH) CFLAGS=-I$R/include python3.9\
+# Only --reconfigure works when build files are present,
+# but it fails if they're not. The docs say the build is supposed
+# to regenerate build.ninja ...
+	test -f $@ ||\
+		$($*.envvars) $(envvars)\
+		PATH=$(tools)$(PATH) CFLAGS="-I$R/include $(cflags)" python3.9\
 		$S/meson/meson.py setup\
-		--prefix="$R" $($*.options) $(options) $S/$* 2>&1|\
-		tee meson_.log
-# --reconfigure
+		--prefix="$R" $($*.options) $(options) $O/$B.$* $S/$* 2>&1|\
+		tee $O/$B.$*/meson_.log
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
@@ -391,3 +404,5 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 clean:
 	rm -rfv $O/$B.elfutils $R
 
+13:
+	scl enable gcc-toolset-13 -- $(MAKE) $t vgccversion=$@
