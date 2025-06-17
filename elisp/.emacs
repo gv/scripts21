@@ -1,4 +1,4 @@
-;; ____________________________________________________________________________
+;; ____________________________________________________________________________  -*- lexical-binding: t; -*-
 ;; Aquamacs custom-file warning:
 ;; Warning: After loading this .emacs file, Aquamacs will also load
 ;; customizations from `custom-file' (customizations.el). Any settings there

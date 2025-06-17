@@ -6,10 +6,10 @@ HERE := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 SRC := $(HERE)
 S := $(SRC)
 SHELL=/bin/bash -o pipefail
-MAKEFLAGS = -Rr
-b0 = $(shell uname -s)
-B = $(b0:Darwin=build)$(cf)$(vgccversion)
-tools0 = $(b0:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
+_MAKEFLAGS = -Rr
+platform = $(shell uname -s)
+B = $(platform:Darwin=build)$(cf)$(vgccversion)
+tools0 = $(platform:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
 tools = $(tools0:Linux=)
 cflags = $(cf:-a=-fsanitize=address)
 
@@ -255,6 +255,7 @@ vars:
 	@echo MAKEFLAGS = $(MAKEFLAGS)
 	@echo B = $B
 	@echo X = $X
+	@echo MAKE = $(MAKE)
 
 subvars:
 	$(MAKE) vars
@@ -262,7 +263,13 @@ subvars:
 # ----------- common rules ---------------------
 
 AFSCTOOL.Darwin = $(HERE)/afsctool/afsctool
-AFSCTOOL = $(AFSCTOOL.$(b0))
+AFSCTOOL = $(AFSCTOOL.$(platform))
+COMPRESS_AND.Linux = @
+COMPRESS_AND.Darwin = $(AFSCTOOL) -cfvvv $O/$B.$* &&
+COMPRESS_R_AND.Linux = @
+COMPRESS_R_AND.Darwin = $(AFSCTOOL) -cfvvv $R &&
+COMPRESS_AND = $(COMPRESS_AND.$(platform))
+COMPRESS_R_AND = $(COMPRESS_R_AND.$(platform))
 
 $(AFSCTOOL.Darwin): $(AFSCTOOL.Darwin).c
 	gcc -o $@ $^
@@ -280,28 +287,24 @@ noinstall.% %.noinstall %.n:
 	$(MAKE) _build.$*
 
 _build.% %.n_: $R/%.waf.successful.log.txt $(AFSCTOOL) $f
-	$(AFSCTOOL) -cfvvv $O/$B.$*
-	@echo $^ is up to date	
+	$(COMPRESS_AND) echo $^ is up to date	
 
 _build.% %.n_: $O/$B.%/%.ninja.success.logc $(AFSCTOOL) $f
-	$(AFSCTOOL) -cfvvv $O/$B.$*
-	@echo $^ is up to date	
+	$(COMPRESS_AND) echo $^ is up to date	
 
 _build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
-	$(AFSCTOOL) -cfvvv $O/$B.$*
-	@echo $^ is up to date	
+	$(COMPRESS_AND) echo $^ is up to date	
 
 %.m:
 	$(MAKE) $*.install_
 
 %.install_: $R/%.installed.logc $(AFSCTOOL) $f
-	$(AFSCTOOL) -cfvvv $R
-	@echo $^ is up to date	
+	$(COMPRESS_R_AND) echo $^ is up to date	
 
 # Build specifically with configure/make
 %.make: $(AFSCTOOL) $(MAKEFILE_LIST) $O/$B.%/Makefile
 	PATH=$(tools)$(PATH) $(MAKE) $R/$*.make.successful.log.txt 
-	$(AFSCTOOL) -cfvvv $O/$B.$*
+	$(COMPRESS_AND) echo $^ is up to date	
 
 
 $R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST)
@@ -339,9 +342,9 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
 		$($*.envvars) PATH=$(tools)$R/bin:$(PATH) ACLOCAL_PATH=$R/share/aclocal\
-			$(dir $<)/configure $(options) $(options.$(b0))\
-			$($*.options) $($*.options.$(b0)) --prefix="$R" 2>&1|\
-			tee _configure.log\
+		$(dir $<)/configure $(options) $(options.$(platform))\
+		$($*.options) $($*.options.$(platform)) --prefix="$R" 2>&1|\
+		tee _configure.log\
 
 CAFF = $(shell which caffeinate)
 $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
@@ -352,7 +355,7 @@ $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 		PATH=$(tools)$(PATH)\
 		time $(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
 		tee $@.tmp.txt
-	$(AFSCTOOL) -cfvvv $O/$B.$*
+	$(COMPRESS_AND) echo $^ is up to date	
 	mv -v $@.tmp.txt $@
 
 $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
@@ -364,9 +367,9 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)
 	mkdir -p $O/$B.$*
-# Only --reconfigure works when build files are present,
-# but it fails if they're not. The docs say the build is supposed
-# to regenerate build.ninja ...
+# If build files are present --reconfigure is mandatory, but it's an
+# error to pass that when there are none.
+# TODO Change in $(options) doesn't work now
 	test -f $@ ||\
 		$($*.envvars) $(envvars)\
 		PATH=$(tools)$(PATH) CFLAGS="-I$R/include $(cflags)" python3.9\
