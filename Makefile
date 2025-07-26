@@ -111,6 +111,11 @@ _build%evince: options=-Ddjvu=enabled -Dnautilus=false\
 	-Dintrospection=false -Dgtk_doc=false -Duser_doc=false\
 	-Dgspell=disabled
 
+#
+# To build with OS paths baked in:
+# scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
+#
+
 zsh%: options = --with-tcsetpgrp
 
 %emacs: options = --with-tiff=no --with-xpm=no --with-gnutls=no\
@@ -124,30 +129,30 @@ libnma%: options = -Dgcr=false -Dintrospection=false -Dvapi=false
 
 network-manager-applet.n: libnma.m
 
-#
-# To build with OS paths baked in:
-# scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
-#
+libass.n: harfbuzz.m fribidi.m freetype2.m
+freetype2.m: bzip2.m zlib.m
+bzip2.m:
+	$(MAKE) bzip2.install_ DISABLE_MESON=disable
 
 new-emacs.n: new-fake-manuals
-
 %fake-manuals:
 	mkdir -p $*emacs/info
 	echo "Fake" > $*emacs/info/emacs
 	echo "Fake" > $*emacs/info/emacs.info
 
 noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
-
 # qemu must skip meson.build
 qemu8.n_: qemu8.m_
-
 glib.m: pcre-8.45.m
+aqemu.make: pkg-config.install_ glib.install_ pixman.install_
 
 lldb.n: swig.m clang.m
-
 clang.m: llvm.m
 
-aqemu.make: pkg-config.install_ glib.install_ pixman.install_
+%ffmpeg: options = --disable-yasm
+SDL%: options = -D SDL_CAMERA=0 -D SDL_DIALOG=0 -D SDL_JOYSTICK=0\
+	-D SDL_HAPTIC=0 -D SDL_POWER=0 -D SDL_SENSOR=0 -D SDL_HIDAPI=0
+ffmpeg.n: SDL.m
 
 T = samba/source3
 
@@ -325,7 +330,7 @@ $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && $(MAKE) -w V=1 VERBOSE=1 $($*.overrides) --trace) 2>&1 |\
+	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides)) 2>&1 |\
 		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
@@ -333,7 +338,7 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 	chmod +x $(dir $<)/configure
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
-		$($*.envvars) PATH=$(tools)$R/bin:$(PATH)\
+		$($*.envvars) PATH=$(tools)$R/bin:$(PATH) ACLOCAL_PATH=$R/share/aclocal\
 			$(dir $<)/configure $(options) $(options.$(b0))\
 			$($*.options) $($*.options.$(b0)) --prefix="$R" 2>&1|\
 			tee _configure.log\
@@ -357,7 +362,7 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 		$($*.envvars) python3 $S/$*/meson/meson.py --prefix="$R"\
 		$($*.options) $(options) $S/$*
 
-$O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
+$O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)
 	mkdir -p $O/$B.$*
 # Only --reconfigure works when build files are present,
 # but it fails if they're not. The docs say the build is supposed
@@ -374,7 +379,7 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 		$($*.envvars) PATH=$(tools)$(PATH)\
 		cmake -DCMAKE_INSTALL_PREFIX="$R"\
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
-		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
+		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $(options)$($*.options)\
 		-S $(HERE)/$* -B $O/$B.$*
 
 %.makefile_in_src: %/Makefile
@@ -384,19 +389,21 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 %/Makefile: %/configure $(MAKEFILE_LIST) $(deps)
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
-		$($*.envvars) ./configure\
-			$($*.options) --prefix="$R" 2>&1| tee _configure.log\
+		$($*.envvars) ACLOCAL_PATH=$R/share/aclocal ./configure\
+			$(options) $($*.options) --prefix="$R" 2>&1| tee _configure.log\
 
-%/Makefile.in: %/configure %/Makefile.am 
+%/Makefile.in: %/configure %/Makefile.am
 	cd $(dir $@) &&\
 		libtoolize -c -f &&\
 		automake --add-missing --copy --force-missing
 
 %/configure: %/autogen.sh
-	cd $(dir $@) && NOCONFIGURE=1 bash $< 2>&1 | tee autogen.log
+	cd $(dir $@) && NOCONFIGURE=1 ACLOCAL_PATH=$R/share/aclocal\
+		bash -xe $< 2>&1 | tee autogen.log ||\
+		(rm configure && false)
 
-%/configure: %/configure.ac 
-	cd $(dir $@) && autoreconf -iv
+%/configure: %/configure.ac  $(MAKEFILE_LIST)
+	cd $(dir $@) && ACLOCAL_PATH=$R/share/aclocal autoreconf -iv
 
 %/configure: %/configure.in 
 	cd $(dir $@) && autoheader -v && aclocal --verbose && autoconf -v

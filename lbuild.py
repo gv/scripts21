@@ -70,12 +70,14 @@ class Input:
 		self.cc = Count("commands")
 		self.compiles = Count("compiles")
 		self.paths = paths
-		self.prefix = ["scl", "enable", "gcc-toolset-9", "--"] 
-		# TODO
-		# It is possible to make it work by using
-		# docker run option --security-opt=seccomp:unconfined
-		# or --privilege 
-		self.prefix += ["setarch", "x86_64", "-R"]
+		self.prefix = []
+		if "linux" == sys.platform:
+			self.prefix = ["scl", "enable", "gcc-toolset-9", "--"] 
+			# TODO
+			# It is possible to make it work by using
+			# docker run option --security-opt=seccomp:unconfined
+			# or --privilege 
+			self.prefix += ["setarch", "x86_64", "-R"]
 
 	def getConf(self, name, default=None):
 		if name == "dir":
@@ -200,7 +202,7 @@ class Build:
 		self.saved = Count("saved")
 
 	def run(self):
-		if not self.args.lid:
+		if not self.args.lid and sys.platform == "linux":
 			cmd = ["systemd-inhibit", "--what=handle-lid-switch"] +\
 				sys.argv + ["--lid"]
 			print("Running '%s'..." %  shlex.join(cmd))

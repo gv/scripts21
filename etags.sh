@@ -6,8 +6,9 @@ set -o pipefail
 list() {
   if [ $# == 0 ]; then
 	git ls-files --recurse-submodules\
-		"*.cc" "*.cpp" "*.[chsm]" "*.java" "*.php" "*.py" "*.ks" "*.rb"\
-		"*.in" "*.tcl" "*.sh" "*.cxx" "*.hxx" "*.inc" "*.js" "*.rs"
+		"*.cc" "*.cpp" "*.[chsm]" "*.java" "*.php" "*.py" "*.ks"\
+		"*.rb" "*.in" "*.tcl" "*.sh" "*.cxx" "*.hxx" "*.inc" "*.js"\
+		"*.rs" "*.pl"
   else
 	# Doesn't work bc `*` is substituted too soon
 	#
@@ -22,18 +23,25 @@ list() {
 
 tests="\\btests?\\b|testsuite|unittest|benchmark"
 here=$(cd "$(dirname "$0")"; pwd)
+etags=$here/build.ctags/etags
+ropt=--regex-c++
+if ! [ -f "$etags" ]; then
+  etags=etags
+  ropt=--regex
+fi
 export GREP_OPTIONS=
 set -x
 rm -fv TAGS TAGS.xz
 # \(\) = subexpression, () = content. Match from the start
 list "$@"| egrep -v $tests|\
-  time nice xargs -n100 -t etags -a --regex '/JS_GLOBAL_FN(.+)/\1/'\
-	   --regex '/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
-	   --regex '/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
-	   --regex '/.*[. ]\(\w+\) = function/\1/'\
-	   --regex '/.*\(\w+\) *: function/\1/'
+  time nice xargs -n100 -t $etags -a\
+	   $ropt='/JS_GLOBAL_FN(.+)/\1/'\
+	   $ropt='/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
+	   $ropt='/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
+	   $ropt='/.*[. ]\(\w+\) = function/\1/'\
+	   $ropt='/.*\(\w+\) *: function/\1/'
 # Add only file paths for tests (might be empty)
-list "$@"| egrep $tests| time nice xargs -n999 -t etags -a --language=none || true
+list "$@"| egrep $tests| time nice xargs -n999 -t $etags -a --language=none || true
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS
 # xz doesn't work on Mac. Also, mb better results:
 #  -rw-r--r--    1 vg  staff   347K Mar 25 22:12 TAGS.bz2

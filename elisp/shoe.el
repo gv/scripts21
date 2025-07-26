@@ -632,7 +632,7 @@ and starts new compile. Alternatively, start new compile as
  (highlight-regexp "[[:nonascii:]]")
  (when
   (string-match
-   "\\(py\\|cpp\\|h\\|txt\\|Makefile\\|Kconfig\\)$" buffer-file-name)
+   "\\(py\\|cpp\\|h\\|_txt\\|Makefile\\|Kconfig\\)$" buffer-file-name)
   (compact-blame-mode)))
 
 (defun tune-dabbrev ()
@@ -707,6 +707,12 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'compilation-error-regexp-alist-alist
  '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
 (add-to-list 'compilation-error-regexp-alist 'node)
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(meson1 "found at \\(/.+\\)" 1))
+(add-to-list 'compilation-error-regexp-alist 'meson1)
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(make "[[]\\([^:\n]+\\):\\([0-9]+\\):" 1 2))
+(add-to-list 'compilation-error-regexp-alist 'make)
 
 (defun Vg-get-local-search-command (query)
  (if (equal window-system 'ns)
@@ -783,10 +789,14 @@ and starts new compile. Alternatively, start new compile as
  (Vg-open-url (vg-open url)))
 
 (defun vg-load-url-editor () (interactive)
- (Vg-open-url
-  (find-file (if (string-match "^/" url) url
-			  (url-unhex-string (match-string 1 line))))))
-
+ (let* ((cmd (car compilation-arguments))
+		(m (string-match "[[:alnum:]]+[[:space:]]*$" cmd))
+		(str (match-string 0 cmd)))
+  (Vg-open-url
+   (find-file (if (string-match "^/" url) url
+			   (url-unhex-string (match-string 1 line))))
+   (isearch-resume str nil t t str t))))
+ 
 (defun vg-open-url-evince () (interactive)
  (Vg-open-url
   (forward-line)

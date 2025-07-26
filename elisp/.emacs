@@ -17,7 +17,12 @@
  ;; If there is more than one, they won't work right.
  '(safe-local-variable-values
    (quote
-	((vg-codeql-module-root . "/win/kserver")
+	((whitespace-check-buffer-indent)
+	 (c-font-lock-extra-types "FILE" "bool" "language" "linebuffer" "fdesc" "node" "regexp")
+	 (editorconfig-lisp-use-default-indent . t)
+	 (c++-font-lock-extra-types "\\sw+_t" "Q[A-Z]\\sw*[a-z]\\sw*")
+	 (nxml-child-indent . 2)
+	 (vg-codeql-module-root . "/win/kserver")
 	 (compact-blame-future-warning-branch . "origin/releases/6.4.4")
 	 (js-indent-level . 2)
 	 (vc-default-patch-addressee . "bug-gnu-emacs@gnu.org")
