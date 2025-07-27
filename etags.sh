@@ -24,22 +24,27 @@ list() {
 tests="\\btests?\\b|testsuite|unittest|benchmark"
 here=$(cd "$(dirname "$0")"; pwd)
 etags=$here/build.ctags/etags
-ropt=--regex-c++
+roptc=--regex-c++
+roptj=--regex-javascript
+# global_opts=--guess-language-eagerly
+global_opts="--langmap=JavaScript:.js.jsx.mjs.ks"
 if ! [ -f "$etags" ]; then
   etags=etags
-  ropt=--regex
+  roptc=--regex
+  roptj=--regex
+  global_opts=
 fi
 export GREP_OPTIONS=
 set -x
 rm -fv TAGS TAGS.xz
 # \(\) = subexpression, () = content. Match from the start
 list "$@"| egrep -v $tests|\
-  time nice xargs -n100 -t $etags -a\
-	   $ropt='/JS_GLOBAL_FN(.+)/\1/'\
-	   $ropt='/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
-	   $ropt='/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
-	   $ropt='/.*[. ]\(\w+\) = function/\1/'\
-	   $ropt='/.*\(\w+\) *: function/\1/'
+  time nice xargs -n100 -t $etags -a $global_opts\
+	   $roptc='/JS_GLOBAL_FN(.+)/\1/'\
+	   $roptc='/JS_STATIC_CLASS_EX[^,]+\(.+\)/\1/'\
+	   $roptc='/JSO_DEFINE_EX[^,]+\(.+\)/\1/'\
+	   $roptc='/.*[. ]\(\w+\) = function/\1/'\
+	   $roptc='/.*\(\w+\) *: function/\1/'
 # Add only file paths for tests (might be empty)
 list "$@"| egrep $tests| time nice xargs -n999 -t $etags -a --language=none || true
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS

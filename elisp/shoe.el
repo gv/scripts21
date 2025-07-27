@@ -270,6 +270,7 @@
    (find-file root)
    (vg-message "'.git' directory not found for '%s'" src))))
 (define-key global-map (kbd "M-s--") 'vg-up-dir)
+(define-key global-map [M-s--] 'vg-up-dir)
 (define-key global-map [s-f11] 'vg-up-dir)
 (defun vg-up-dir () (interactive)
  (let ((p (or (buffer-file-name) default-directory)))
@@ -594,7 +595,7 @@ and starts new compile. Alternatively, start new compile as
 
 (defun vg-tune-c ()
   (setq c-basic-offset 4
-		tab-width 4
+		tab-width 2
 		js-indent-level 4
 		indent-tabs-mode t
 ;		tags-case-fold-search nil
@@ -715,6 +716,9 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'compilation-error-regexp-alist 'make)
 
 (defun Vg-get-local-search-command (query)
+ ;; Need an interface for Spotlight search because the Finder one is no good.
+ ;; It doesn't tell if it's done or still going, and it's always jumping.
+ ;; Of course an additional good thing is ability to isearch results...
  (if (equal window-system 'ns)
   (format
    "mdfind %s"
@@ -737,8 +741,9 @@ and starts new compile. Alternatively, start new compile as
   (with-current-buffer
    (compilation-start cmd 'compilation-mode
 	(lambda (&rest _) "*tracker-search*"))
-   (let ((query (replace-regexp-in-string
-				 (Vg-get-local-search-command "") "" cmd)))
+   (let* ((query (replace-regexp-in-string
+				  (Vg-get-local-search-command "") "" cmd))
+		  (noquotes-query (string-trim query "[\"']+" "[\"']+")))
 	;; TODO Still doesn't work when buffer reverted
 	(setq-local revert-buffer-function
 	 (lambda (&rest _)
@@ -751,10 +756,12 @@ and starts new compile. Alternatively, start new compile as
 		 (Vg-ins-search-url "u"
 		  (concat query " -\"hey delphi\" -\"Roel Van de Paar\"")
 		  "https://www.youtube.com/results?search_query=%s")
-		 (Vg-ins-search-url "h" query
+		 (Vg-ins-search-url "h" noquotes-query
 		  "https://github.com/search?q=%s&type=code")
-		 (Vg-ins-search-url "p" query
+		 (Vg-ins-search-url "p" noquotes-query
 		  "https://pkgs.org/search/?q=%s")
+		 (Vg-ins-search-url "n" noquotes-query
+		  "https://packages.ubuntu.com/search?keywords=%s")
 		 (pop-to-buffer (current-buffer)))
 		compilation-finish-functions))))
 	(funcall revert-buffer-function)))))
@@ -790,12 +797,16 @@ and starts new compile. Alternatively, start new compile as
 
 (defun vg-load-url-editor () (interactive)
  (let* ((cmd (car compilation-arguments))
-		(m (string-match "[[:alnum:]]+[[:space:]]*$" cmd))
-		(str (match-string 0 cmd)))
-  (Vg-open-url
-   (find-file (if (string-match "^/" url) url
-			   (url-unhex-string (match-string 1 line))))
-   (isearch-resume str nil t t str t))))
+		(noquotes (replace-regexp-in-string "[\"']" "" cmd))
+		(m (string-match "[^[:space:]]+$" noquotes))
+		(str (match-string 0 noquotes)))
+  (if m
+   (Vg-open-url
+	(find-file (if (string-match "^/" url) url
+				(url-unhex-string (match-string 1 line))))
+	(isearch-resume str nil t t str t))
+   (vg-message "Search string not found"))))
+ 
  
 (defun vg-open-url-evince () (interactive)
  (Vg-open-url
@@ -860,6 +871,7 @@ and starts new compile. Alternatively, start new compile as
 			   '("systemd-inhibit" "--what=handle-lid-switch"))
 			  '("git" "log") (split-string options))))
   (require 'vc-git)
+  ;; TODO Need new buffer bc old CWD remains 
   (set-buffer (get-buffer-create bn))
   (setq-local revert-buffer-function
    (lambda (&rest ignored)
@@ -1066,7 +1078,7 @@ and starts new compile. Alternatively, start new compile as
  (vg-message "Wrote %s (vc-after-save disabled) %d characters" buffer-file-name (buffer-size)))
 (setq fast-but-imprecise-scrolling t)
 (require 'grep)
-(grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
+(grep-apply-setting 'grep-command "git grep --recurse-submodules -En ")
 (grep-apply-setting 'grep-use-null-device nil)
 (setq sh-basic-offset 2)
 (setq compilation-skip-threshold 2)
