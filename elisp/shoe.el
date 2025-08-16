@@ -172,6 +172,7 @@
  (lambda () (interactive)
   (vg-message "Overwrite mode switch disabled")))
 (define-key global-map (kbd "s-b") 'end-of-buffer)
+(define-key global-map (kbd "C-b") 'end-of-buffer)
 (define-key global-map [f7] 'google-line)
 (define-key global-map [f9] 'gscholar-line)
 (define-key global-map [f12] 'vg-gh-search-line)
@@ -703,7 +704,8 @@ and starts new compile. Alternatively, start new compile as
 
 (require 'compile)
 (add-to-list 'compilation-error-regexp-alist-alist
- '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 1)) ; a warning
+;; sub1 = file, sub2 = line, no column, type = warning
+ '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
 (add-to-list 'compilation-error-regexp-alist 'asan)
 (add-to-list 'compilation-error-regexp-alist-alist
  '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
