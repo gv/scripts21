@@ -17,12 +17,16 @@
         alias 2e=~/stuff/2emacs.py
         alias inh="systemd-inhibit --what=handle-lid-switch"
         alias inhj="inh journalctl -f"
+        # Handle other aliases
+        # Without backslash: $0 $@ evaluated after alias subst
+        alias in0='systemd-inhibit --what=handle-lid-switch \
+        bash -ic "eval \$0 \$@"'
         alias g3="bash -ecx 'git stash && git pull --rebase --recurse-submodules && git stash apply'"
         alias d3='docker run --rm -v $(pwd):$(pwd) -w $(pwd)'
         alias d4='d3 -u $(id -u)'
         alias d5='d4 -e "HOME=$(pwd)"'
         alias d3i='inh docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
-        vgYtdlFlags="--output \
+        vgYtdlFlags="--abort-on-unavailable-fragment --output \
         \"%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s\""
         alias y0="python2 ~/src/youtube-dl/youtube_dl/__main__.py"
         alias yd="y0 $vgYtdlFlags"
@@ -35,15 +39,21 @@
         alias 12='scl enable gcc-toolset-12 --'
         alias 13='scl enable gcc-toolset-13 --'
         alias m1='zenity --info --text'
+        alias š=systemctl
       
-  - name: Disable ssh password
-    tags: never
+  - name: Bash aliases for root
+    tags: user
     become: true
-    lineinfile:
-      validate: 'sshd -t -f %s'
-      path: /etc/ssh/sshd_config
-      regexp: '^[^#\w]*PasswordAuthentication.*$'
-      line: 'PasswordAuthentication no'
+    blockinfile: 
+      path: /root/.bashrc
+      backup: yes
+      create: yes
+      marker: "# vg: {mark} ANSIBLE MANAGED BLOCK"
+      validate: bash -x %s
+      block: |
+        shopt -s autocd
+        alias inh="systemd-inhibit --what=handle-lid-switch"
+        alias š=systemctl
       
   - name: Core dumps 1/2
     tags: system1
