@@ -6,7 +6,7 @@ import argparse, re, os, sys, time, subprocess, struct
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("DMPFILE", help="Path to core file", nargs="*")
 parser.add_argument(
-	"-b", "--base", help="Print stack of crashed thread")
+	"-b", "--base", help="Prefix to strip from paths")
 parser.add_argument(
 	"-r", "--storage", help="Path to binary archive")
 parser.add_argument(
@@ -29,8 +29,11 @@ parser.add_argument(
 	"-t", "--threadf", action="store_true",
 	help="Print frames decoded by lldb (crashed thread)")
 parser.add_argument(
-		"-T", "--threads", action="store_true",
+		"--threads", action="store_true",
 		help="Print frames decoded by lldb (each thread)")
+parser.add_argument(
+	"-T", "--telescope", action="store_true",
+	help="Recursively resolve words from stack (crashed)")
 parser.add_argument(
 	"-B", "--bt", action="store_true",
 	help="Print stack of crashed thread")
@@ -47,7 +50,9 @@ parser.add_argument(
 	"-y", "--threadn", help="Print all words from stack N")
 parser.add_argument(
 	"-X", "--fa", action="store_true", 
-	help="Print all words from crashed thread using `memory read -fA`")
+	help=""""
+Print all words from crashed thread using `memory read -fA` (aka x/a)
+""")
 parser.add_argument(
 	"-H", "--hex", action="store_true", help="Hex dump stack of crashed thread")
 parser.add_argument(
@@ -138,6 +143,26 @@ def hexDumpMem(process, start, end, error):
 def printSize(count, name):
 	print("%20s %s" % (nn(getattr(count, name.lower())), name))
 
+def abbreviate_identifiers(code: str) -> str:
+	"""
+	Replaces repeated identifiers in a string with abbreviations.
+	First occurrence stays intact, subsequent ones get replaced.
+	Abbreviations are first letter + '.' (e.g., 'count' -> 'c.')
+	"""
+	identifier_pattern = re.compile(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b')
+		
+	seen = {}
+
+	def replacer(match):
+		identifier = match.group(0)
+		if identifier not in seen:
+			seen[identifier] = identifier[0] + "."
+			return identifier	 # keep the first occurrence
+		else:
+			return seen[identifier]
+
+	return identifier_pattern.sub(replacer, code)
+
 ptrSize = 8
 
 class Count:
@@ -183,37 +208,96 @@ class Util:
 			raise DebuggerError(str(self.error))
 		return result
 
+	def describeAddr(self, addr):
+		ptr = addr.GetLoadAddress(self.sbt)
+		return CallSite(self).describePointer(ptr, addr)
+	
+	def getRegion(self, ptr):
+		reg = lldb.SBMemoryRegionInfo()
+		check(self.process.GetMemoryRegionInfo(ptr, reg))
+		return reg.IsMapped() and reg or None
+		
 class SymbolNotOnServer(Exception):
 	pass
 
-class CallSite:
+class CallSite(Util):
+	"""
+	An object tracking a saved caller PC on stack. 
+	TODO: Transform this class into more general pointer classifier
+	"""
 	def __init__(self, target):
 		self.error = target.error
-		self.sbt = target.target
+		self.sbt = target.sbt
 		self.sbp = target.process
 		self.args = target.args
 		self.target = target
+		self.reg = None
 		class Count:
 			def __init__(self):
 				self.words = self.calls = self.destinations = 0
 				self.pointers = self.readable = 0
 		self.count = Count()
+		self.stack = self.sp = self.pos = None
+
+	def describePointer(self, ptr, addr=None):
+		self.callerInstrs = []
+		self.ra0 = ptr
+		# TODO:
+		# Move describeAddr here
+		# Detect pointers to another threads stack bc it's probably
+		# some kind of anomaly
+		# Also, detect pointers that point down the stack - can't be
+		# good too
+		if not self.stack is None: 
+			if ptr >= self.sp and ptr <= self.stack.GetRegionEnd():
+				return "Same stack +%s" % (nn(ptr-self.pos))
+		self.reg = self.target.getRegion(ptr)
+		if not self.reg:
+			return "Unmapped"
+		if self.target.getThreadWithStackInRegion(self.reg):
+			return "Other stack" if self.stack else "Stack"
+		self.pa = addr or lldb.SBAddress(ptr, self.sbt)
+		if not self.pa.section.IsValid():
+			return "Heap or mmap"
+		desc = "Indescribable"
+		if self.pa.function.IsValid():
+			off = self.pa.offset - self.pa.function.addr.offset
+			desc = "%s+%d" % ( self.pa.function.name, off)
+		elif self.pa.symbol.IsValid():
+			off = self.pa.offset - self.pa.symbol.addr.offset
+			desc = "%s+%d" % ( self.pa.symbol.name, off)
+		elif self.pa.section.IsValid():
+			desc = "%s%s+%s" % (
+				self.pa.module.GetFileSpec().basename, self.pa.section.name,
+				xx(self.pa.offset))
+			if ".module_image" == self.pa.section.name:
+				desc += " (buildId=%s)" % getId(self.pa.module, self.args.long)
+		elif self.pa.module.IsValid():
+			desc = self.pa.module.name
+		# Try to load caller instructions regardles if it is code
+		# section or not
+		self.loadCallInstrFromAddress(ptr, self.pa)
+		return desc
 
 	def loadCallInstr(self, pretaddrl):
-		msg = self.loadCallInstrGetMessage(pretaddrl)
+		ra0 = self.target.check(self.sbp.ReadPointerFromMemory(
+			pretaddrl, self.sbt.error))
+		msg = self.loadCallInstrGetMessage(ra0)
 		if msg:
 			print("%s: %s %s" % (xx(pretaddrl), xx(self.ra0), msg))
 		else:
 			return self.call
 
-	def loadCallInstrGetMessage(self, pretaddrl):
-		self.callerInstrs = []
-		self.ra0 = ra0 = self.target.check(self.sbp.ReadPointerFromMemory(
-			pretaddrl, self.target.error))
+	def loadCallInstrGetMessage(self, ra0):
+		self.ra0 = ra0
 		self.ra = ra = lldb.SBAddress(ra0, self.sbt)
 		if not ra.section.IsValid():
 			return "no sec"
 		self.count.pointers += 1
+		return self.loadCallInstrFromAddress(ra0, ra)
+
+	def loadCallInstrFromAddress(self, ra0, ra):
+		self.callerInstrs = []
 		if ra.section.file_size == 0:
 			return "no image"
 		self.count.readable += 1
@@ -251,19 +335,6 @@ class CallSite:
 			print("	 Unknown instr %x %x %x %x %x" % bytes[-5:-1])
 		return False
 
-	def describeAddr(self, addr):
-		off = addr.offset - addr.symbol.addr.offset
-		desc = "Indescribable"
-		if addr.symbol.IsValid():
-			desc = "%s+%d" % ( addr.symbol.name, off)
-		elif addr.section.IsValid():
-			desc = "sect %s+%s" % (addr.section.name, xx(addr.offset))
-			if ".module_image" == addr.section.name:
-				desc += " (buildId=%s)" % getId(addr.module, self.args.long)
-		elif addr.module.IsValid():
-			desc = addr.module.name
-		return desc
-	
 
 class UnwindFrame(CallSite):
 	def loadTopOfStack(self, thread, stack):
@@ -299,7 +370,7 @@ class UnwindFrame(CallSite):
 				if len(ops) == 2:
 					if self.spDecrement:
 						sys.stdout.write(
-							"Extra sub SP instruction (1st sub=%X): " % sub)
+							"Extra sub SP instruction (1st sub=%X): " % self.spDecrement)
 						self.target.printInstruction(ii)
 					elif not ops[0].startswith("$"):
 						sys.stdout.write("Non-constant sub SP: ")
@@ -325,8 +396,7 @@ class UnwindFrame(CallSite):
 			print(
 				"	 Instructions unreadable @ %s." % (self.describeAddr(pc))) 
 			print(" Starting search for return address...")
-		reg = lldb.SBMemoryRegionInfo()
-		check(self.target.process.GetMemoryRegionInfo(self.sp, reg))
+		reg = self.target.getRegion(self.sp)
 		# If nothing pushed, return address can be located @ sp
 		for pretaddrl in range(self.sp, reg.GetRegionEnd(), ptrSize):
 			self.count.words += 1
@@ -377,7 +447,7 @@ class UnwindFrame(CallSite):
 		# sys.stdout.write("\u2666 %s: %s %s %s\n" % (
 		sys.stdout.write("%s: %s %s %s\n" % (
 			self.source, xx(self.pc), self.target.getName(pc.module),
-			self.describeAddr(pc)))
+			self.target.describeAddr(pc)))
 		sys.stdout.flush()
 
 class MemTypeCount:
@@ -385,19 +455,19 @@ class MemTypeCount:
 		self.heap = self.stack = 0
 
 class Target(Util):
-	def __init__(self, args, debugger):
+	def __init__(self, args, debugger, sbt=None):
 		self.args, self.debugger = args, debugger
 		self.error = lldb.SBError()
-		self.target = self.check(self.debugger.CreateTarget(
+		self.sbt = sbt or self.check(self.debugger.CreateTarget(
 			"", "", "", True, self.error))
 		# Hack: add mapping to nonexistent files so
 		# ModuleList::GetSharedModule gets called first without a real
 		# path and finds storage files in target.exec-search-paths
 		if self.args.storage\
-			and hasattr(self.target, "AppendImageSearchPath"):
-			self.check(self.target.AppendImageSearchPath(
+			and hasattr(self.sbt, "AppendImageSearchPath"):
+			self.check(self.sbt.AppendImageSearchPath(
 				"/Volumes", self.args.storage, self.error))
-			self.check(self.target.AppendImageSearchPath(
+			self.check(self.sbt.AppendImageSearchPath(
 				"/Applications", self.args.storage, self.error))
 		if self.args.download:
 			self.setVar("target.preload-symbols", "false")
@@ -408,7 +478,6 @@ class Target(Util):
 			self.storagePath = os.path.abspath(self.args.storage)
 		else:
 			self.storagePath = os.path.dirname(os.path.abspath(self.path))
-		self.verb("storage='%s'" % self.storagePath)
 		dirs = [self.storagePath] +\
 				[os.path.join(self.storagePath, x) for
 					x in os.listdir(self.storagePath) if
@@ -417,19 +486,20 @@ class Target(Util):
 		self.setVar("target.exec-search-paths", " ".join(dirs))
 		self.verb("Loading '%s'..." % self.path)
 		if sys.version_info[0] < 3:
-			self.process = self.target.LoadCore(path)
+			self.process = self.sbt.LoadCore(path)
 		else:
 			self.process = self.check(
-				self.target.LoadCore(path, self.error))
-		for m in self.target.modules:
+				self.sbt.LoadCore(path, self.error))
+		for m in self.sbt.modules:
 			self.verb("Looking for symbols for '%s'...\n" % (
 				m.file.fullpath))
 			pdb = m.file.fullpath + ".pdb"
 			if not os.path.isfile(pdb):
-				self.verb("No symbol file '%s'" % pdb)
-				pdb = m.file.basename + ".pdb"
+				self.verb("No symbol file '%s'\n" % pdb)
+				pdb = m.file.basename.replace(".exe", "").replace(".dll", "") +\
+					".pdb"
 				if not os.path.isfile(pdb):
-					self.verb("No symbol file '%s'" % pdb)
+					self.verb("No symbol file '%s'\n" % pdb)
 					continue
 			if 0 and\
 				 not m.file.fullpath.startswith(self.args.storage) and\
@@ -455,7 +525,7 @@ class Target(Util):
 
 	def attach(self, name):
 		self.verb("Attaching '%s'..." % name)
-		self.process = self.check(self.target.Attach(
+		self.process = self.check(self.sbt.Attach(
 			lldb.SBAttachInfo(name, False), self.error))
 		self.verb("DONE\n")
 		return self
@@ -615,35 +685,35 @@ class Target(Util):
 
 	def printInstruction(self, ii, needCode=False):
 		ibs = ""
-		data = ii.GetData(self.target)
+		data = ii.GetData(self.sbt)
 		bytes = self.check(
 			data.ReadRawData(self.error, 0, ii.GetByteSize()))
 		if needCode:
 			for bv in bytes:
 				ibs += "%02X " % bv
-		comment = ii.GetComment(self.target)
+		comment = ii.GetComment(self.sbt)
 		if comment:
 			comment = " ; " + comment
-		name = ii.GetMnemonic(self.target)
-		ptr = ii.addr.GetLoadAddress(self.target)
+		name = ii.GetMnemonic(self.sbt)
+		ptr = ii.addr.GetLoadAddress(self.sbt)
 		print("	 %s %s%s %s%s" % (
-			xx(ptr), ibs, name, ii.GetOperands(self.target), comment))
+			xx(ptr), ibs, name, ii.GetOperands(self.sbt), comment))
 		if "callq" == name:
 			call = UnwindFrame.getCall(self, bytes, ptr + len(bytes))
 			if call and call.destination:
-				da = self.target.ResolveLoadAddress(call.destination)
+				da = self.sbt.ResolveLoadAddress(call.destination)
 				print("	 => %s %s %s %s" % (
 					xx(call.destination), self.getName(da.module),
 					UnwindFrame.describeAddr(self, da), da.section.name))
 			
 	def getFuncInstructions(self, f, pc):
 		# Doesn't work
-		# insns = f.function.GetInstructions(self.target)
+		# insns = f.function.GetInstructions(self.sbt)
 		# also: symbol.GetInstructions
 		size = f.symbol.end_addr.GetOffset() - f.symbol.addr.GetOffset()
 		secBase = pc - f.offset
 		#fpos = f.symbol.IsValid() and\
-		#	f.symbol.addr.GetLoadAddress(self.target)
+		#	f.symbol.addr.GetLoadAddress(self.sbt)
 		fpos = secBase + f.symbol.addr.offset
 		if not f.symbol.addr.IsValid():
 			print("Addr not valid on %s" % f.symbol)
@@ -657,66 +727,72 @@ class Target(Util):
 				print("Error reading memory %s size=%s (%s %s(=%s):%s) = '%s'" % (
 					xx(fpos), xx(size),
 					f.symbol, f.symbol.addr.section.name,
-					f.symbol.addr.section.GetLoadAddress(self.target),
+					f.symbol.addr.section.GetLoadAddress(self.sbt),
 					xx(f.symbol.addr.offset), self.error))
 				return
-		return self.target.GetInstructions(f.symbol.addr, bytes)
+		return self.sbt.GetInstructions(f.symbol.addr, bytes)
 
 	def printWordsFromStack(self, n):
 		if type(n) is int:
-			t = self.process.GetThreadByIndexID(n)
-			if not t.IsValid():
+			th = self.process.GetThreadByIndexID(n)
+			if not th.IsValid():
 				raise Exception("No thread %d" % n)
 		else:
-			t = n
-		stack = self.printStackInfo(t)
-		self.printRegs(t.frames[0], {})
-		uwf = UnwindFrame(self).loadTopOfStack(t, stack)
+			th = n
+		sp = th.frames[0].sp
+		stack = self.printStackInfo(th)
+		self.printRegs(th.frames[0], {})
 		if self.args.threadm or self.args.fa:
 			self.doCmd("memory read --force -fA 0x%X 0x%X" % (
-				uwf.sp, stack.GetRegionEnd()))
+				sp, stack.GetRegionEnd()))
 			return
 		if self.args.hex:
 			self.check(hexDumpMem(
-				self.process, uwf.sp, stack.GetRegionEnd(), self.error))
+				self.process, sp, stack.GetRegionEnd(), self.error))
 			return
+		# -x = try to follow call chain
+		# -z = trawl stack for everything that can be a caller PC
 		if self.args.thread:
+			uwf = UnwindFrame(self).loadTopOfStack(th, stack)
 			while uwf:
 				uwf.print()
 				uwf = UnwindFrame(self).loadReturnAddress(
 					uwf.getReturnAddrLoc(), stack)
+			return
+		self.printPointers(sp, stack.GetRegionEnd(), stack)
+
+	def printPointers(self, sp, end, stack):
+		"""
+		TODO:
+		Need more fundamental pointer classification to bins like
+		"same stack" (done) "other stack" "heap" "not pointer"
+		"code" (done) "code/caller PC" (done) "data" (resolve recursively, done) 
+		"""
 		cs = CallSite(self)
-		for pretaddrl in range(uwf.sp, stack.GetRegionEnd(), ptrSize):
+		cs.stack = stack
+		cs.sp = sp
+		for pretaddrl in range(sp, stack.GetRegionEnd(), ptrSize):
 			# If it points to current stack then it can't be return address
 			self.error.Clear()
 			ra0 = self.check(self.process.ReadPointerFromMemory(
 				pretaddrl, self.error))
-			# Important bc if it's not "this stack" then it's probably
-			# the heap
-			# TODO:
-			# Detect pointers to another threads stack bc it's probably
-			# some kind of anomaly
-			# Also, detect pointers that point down the stack - can't be
-			# good too
-			if ra0 >= uwf.sp and ra0 <= stack.GetRegionEnd():
-				print("%s: %s this stack +%s" % (
-					xx(pretaddrl), xx(ra0), nn(ra0-pretaddrl)))
-				continue
-			msg = cs.loadCallInstrGetMessage(pretaddrl)
-			if not cs.ra.section.IsValid():
-				pointed0 = self.process.ReadPointerFromMemory(ra0, self.error)
-				if not self.error.fail:
-					print("%s: %s => %s %s" % (
-						xx(pretaddrl), xx(ra0), xx(pointed0), 
-						cs.describeAddr(self.target.ResolveLoadAddress(pointed0))))
-				continue
-			if msg:
-				print("%s: %s %s" % (xx(pretaddrl), xx(ra0), msg))
-				continue
-			print("%s: %s %s" % (xx(pretaddrl), xx(ra0), cs.describeAddr(cs.ra)))
+			cs.pos = pretaddrl
+			msg = cs.describePointer(ra0)
+			print("%s: %s %s" % (xx(pretaddrl), xx(ra0), msg))
 			for ii in cs.callerInstrs:
 				self.printInstruction(ii)
-
+			# Don't follow pointer if in the same region or code
+			if cs.callerInstrs or (ra0 >= sp and ra0 <= end):
+				continue
+			for level in range(1, 32):
+				if (cs.reg is None) or cs.pa.function.IsValid():
+					break
+				# TODO Detect loops
+				self.error.Clear()
+				ra0 = self.check(self.process.ReadPointerFromMemory(
+					ra0, self.error))
+				msg = cs.describePointer(ra0)
+				print("%s %s %s" % (" "*level, xx(ra0), msg))
 
 	def getAscii(self, pos, size):
 		# ReadCStringFromMemory can't specify the code page
@@ -855,26 +931,26 @@ class Target(Util):
 			if not os.path.isfile(path):
 				continue
 			# path, architecture, UUID, symfile
-			new = self.target.AddModule(path, None, None, None)
+			new = self.sbt.AddModule(path, None, None, None)
 			if not new:
 				raise Exception("%s not added" % path)
 			if new.uuid != m.uuid:
 				self.verb("Skipping %s (%s) for '%s'\n" % (
 					new.file.fullpath, new.uuid, m.file.basename))
-				self.target.RemoveModule(new)
+				self.sbt.RemoveModule(new)
 				continue
 			if m.num_sections != new.num_sections:
 				self.verb(
 					"Module %s: num_sections differ,\n%d in %s\n%d in %s" % (
 						m.uuid, m.num_sections, m.file.fullpath,
 						new.num_sections, new.file.fullpath))
-				self.target.RemoveModule(new)
+				self.sbt.RemoveModule(new)
 				continue
 			for i in range(m.num_sections):
-				check(self.target.SetSectionLoadAddress(
+				check(self.sbt.SetSectionLoadAddress(
 					new.sections[i],
-					m.sections[i].GetLoadAddress(self.target)))
-			self.target.RemoveModule(m)
+					m.sections[i].GetLoadAddress(self.sbt)))
+			self.sbt.RemoveModule(m)
 			return 
 		msg = ("'%s' (%s) not in storage" % (
 			m.file.fullpath, m.uuid))
@@ -883,23 +959,13 @@ class Target(Util):
 		else:
 			raise Exception(msg)
 
-	def fixModulesNotInStorage(self):
-		# some modules get removed
-		for m in self.target.modules[:]:
-			if m.file.fullpath.startswith(self.args.storage):
-				continue
-			if m.file.fullpath.startswith("/Volumes"):
-				self.replaceModuleFromStorage(m)
-			if m.file.fullpath.startswith("/Applications"):
-				self.replaceModuleFromStorage(m)
-
 	def printModules(self, tool):
 		count = Count()
 		mtime = time.localtime(os.path.getmtime(self.path))
 		if self.args.modules:
 			print("\
 nsect, all sections size on disk, id, load addr, name, symfile")
-		for m in self.target.modules:
+		for m in self.sbt.modules:
 			path = m.file.fullpath;
 			parts = path.split("/")
 			if len(parts) > 1:
@@ -935,7 +1001,7 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 				if fsize:
 					def printSec(prefix, sec):
 						print("%s%s+%s %s" % (
-							prefix, xx(sec.GetLoadAddress(self.target)),
+							prefix, xx(sec.GetLoadAddress(self.sbt)),
 							xx(sec.GetByteSize()),
 							sec.name))
 						for i in range(sec.GetNumSubSections()):
@@ -944,18 +1010,18 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 						printSec("	", sec)
 		if 1:
 			print("gdb -ex 'set sysroot %s' %s %s" % (
-				os.path.dirname(self.target.executable.fullpath),
-				self.target.executable, self.path))
+				os.path.dirname(self.sbt.executable.fullpath),
+				self.sbt.executable, self.path))
 		if self.args.stat:
 			if not hasattr(tool, "statHeaderPrinted"):
 				print(" modules: total, system, store, other, absent")
 				tool.statHeaderPrinted = True
 			print(
 				self.getTime() + "%3d %3d %3d %3d %3d %11s %11s %s '%s'" % (
-					self.target.GetNumModules(),
+					self.sbt.GetNumModules(),
 					count.system, count.store, count.other, 
 					count.absent, cut(self.path, 8),
-					cut(self.target.executable.basename, 8),
+					cut(self.sbt.executable.basename, 8),
 					self.process.selected_thread.frames[0].addr,
 					self.process.selected_thread.GetStopDescription(80)))
 
@@ -963,13 +1029,13 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 		for s in m.sections:
 			for i in range(s.GetNumSubSections()):
 				ss = s.GetSubSectionAtIndex(i)
-				if ss.GetLoadAddress(self.target) != 0xFFFFFFFFFFFFFFFF:
-					return s.GetLoadAddress(self.target)
+				if ss.GetLoadAddress(self.sbt) != 0xFFFFFFFFFFFFFFFF:
+					return s.GetLoadAddress(self.sbt)
 				print("Invalid load address for '%s'" % (ss.name))
-			if s.GetLoadAddress(self.target) != 0xFFFFFFFFFFFFFFFF:
+			if s.GetLoadAddress(self.sbt) != 0xFFFFFFFFFFFFFFFF:
 				break
 			print("Invalid load address for	 '%s'" % (s.name))
-		return s.GetLoadAddress(self.target)
+		return s.GetLoadAddress(self.sbt)
 
 	def getTime(self):
 		mtime = time.localtime(os.path.getmtime(self.path))
@@ -979,7 +1045,7 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 		if not self.args.storage:
 			raise Exception("Can't download without storage dir")
 		work = []
-		for m in self.target.modules:
+		for m in self.sbt.modules:
 			if not m.file.fullpath.startswith(self.args.storage):
 				continue
 			self.verb("Full=%s\n" % m.file.fullpath)
@@ -1130,8 +1196,6 @@ class Tool(Util):
 		for path in self.args.DMPFILE:
 			try:
 				t = Target(self.args, self.debugger).load(path)
-				if 0 and self.args.storage:
-					t.fixModulesNotInStorage()
 				self.handleTarget(t)
 			except Exception as e:
 				if not self.args.stat: raise
@@ -1151,7 +1215,7 @@ class Tool(Util):
 				self.args.storage and (
 					"-o 'settings set target.exec-search-paths %s'" %
 					self.args.storage) or "", t.path)
-			for mo in t.target.modules:
+			for mo in t.sbt.modules:
 				if mo.GetSymbolFileSpec().IsValid():
 					if mo.GetSymbolFileSpec() != mo.file:
 						cmd += " -o 'target symbols add %s'" % (
@@ -1163,7 +1227,7 @@ class Tool(Util):
 			t.printWordsFromStack(
 				int(self.args.threadn or self.args.threadm, 10))
 		elif self.args.thread or self.args.fa or self.args.callsites or\
-				 self.args.hex:
+				 self.args.hex or self.args.telescope:
 			t.printWordsFromStack(t.process.selected_thread)
 		elif self.args.threads:
 			t.printStacks()
@@ -1218,13 +1282,18 @@ def icuOrError(a0, sbp):
 	us = icu(a0, sbp, err)
 	return err.fail and err or repr(us)
 
+class DpcError(Exception):
+	pass
+
 class DataPrintoutContext(Util):
-	def __init__(self):
+	def __init__(self, sbt=None):
 		self.error = lldb.SBError()
 		self.valName = None
 		self.filter = self.negFilter = None
+		self.printed = set()
+		self.sbt = sbt
 		
-	def detectTypeGetName(self, a0, sbt):
+	def detectTypes(self, a0, sbt):
 		# print("self.filter=%s" % self.filter)
 		vtb0 = sbt.process.ReadPointerFromMemory(a0, self.error)
 		if not self.filter:
@@ -1237,27 +1306,42 @@ class DataPrintoutContext(Util):
 				vtb0, sc, sc.GetCompileUnit(), sc.symbol))
 			pp = str(sc.symbol.name).split(" for ")
 			if (len(pp) > 1):
-				return pp[1]
+				return self.findTypes1(pp[1], sbt)
 		# Sometimes can't resolve vtable - check for desstructor
 		dest0 = self.check(sbt.process.ReadPointerFromMemory(vtb0, self.error))
 		destr = lldb.SBAddress(dest0, sbt)
-		name = destr.symbol.name
-		if not name or not "~" in name:
-			print("Not a destructor '%s' at %s" % (name, xx(dest0)))
-			return
-		return name.split("~")[0][:-2]
+		# "function" works with PDB debug info
+		name = destr.function.name or destr.symbol.name
+		if not name:
+			raise DpcError("Head not resolvable %s" % (xx(dest0)))
+		if "~" in name:
+			return self.findTypes1(name.split("~")[0][:-2], sbt)
+		name = name.split("::")[0]
+		types = self.findTypes(name, sbt)
+		if len(types) == 1:
+			return types
+		# Heuristics
+		name = name.split("<")[-1].split(",")[0]
+		return self.findTypes1(name, sbt)
+	
+	def findTypes(self, typeName, sbt):
+		for im in sbt.modules:
+			if len(types := im.FindTypes(typeName)):
+				break
+		return types
+
+	def findTypes1(self, typeName, sbt):
+		types = self.findTypes(typeName, sbt)
+		if len(types) != 1:
+			raise DpcError("%d types '%s'" % (len(types), typeName))
+		return types
 
 	def getValue(self, a0, sbt, typeName=None):
-		if not typeName:
-			typeName = self.detectTypeGetName(a0, sbt)
-			if not typeName:
-				# Error message must have been printed by detectTypeGetName
-				return
-		types = sbt.modules[0].FindTypes(typeName)
-		if len(types) != 1:
-			print("%d types '%s'" % (len(types), typeName))
-		if len(types) == 0:
-			return
+		if typeName:
+			types = self.findTypes1(typeName, sbt)
+		else:
+			types = self.detectTypes(a0, sbt)
+		typeName = types.GetTypeAtIndex(0).name
 		addr = lldb.SBAddress(a0, sbt)
 		return sbt.CreateValueFromAddress(
 			self.valName or ("*"+typeName), addr, types.GetTypeAtIndex(0))
@@ -1268,12 +1352,16 @@ class DataPrintoutContext(Util):
 			print("%s%s level too big" % (len(trail), val.name))
 			return
 		type = val.GetType()
+		key = "%s-%s" % (val.GetAddress(), type.name)
+		if key in self.printed:
+			return
+		self.printed.add(key)
 		if self.negFilter:
 			if val.name and re.search(self.negFilter, val.name):
 				return
 			if type.name and re.search(self.negFilter, type.name):
 				return
-		if val.name != type.name:
+		if 1 or val.name != type.name:
 			trail = trail + [str(val.name).replace("[", "").replace("]", "")]
 		prefix = str(val.GetAddress()) + (indent or (" %s " % ".".join(trail)))
 		suppress = self.filter and not re.search(self.filter, prefix) and\
@@ -1284,30 +1372,18 @@ class DataPrintoutContext(Util):
 			shortTrail = "..." + shortTrail[-60:]
 		# sys.stdout.write("\r%s %s" % (val.GetAddress(), shortTrail))
 		summary = val.GetSummary() or val.GetValue()
-		nc = 0
-		if 0 and type.IsPointerType():
-			dpc = DataPrintoutContext()
-			dpc.valName = "*" + val.name
-			a0 = val.GetValueAsUnsigned()
-			if a0:
-				try:
-					nv = dpc.getValue(a0, val.GetTarget())
-					if nv:
-						val = nv
-						type = val.GetType()
-				except DebuggerError:
-					pass
-		if not type.IsPointerType():
-			nc = val.GetNumChildren()
-		if 0 == nc or summary:
+		nc = 0 if type.IsPointerType() else val.GetNumChildren()
+		if 0 == nc:
+			if suppress: return
 			if not summary:
 				err = lldb.SBError()
 				num = val.GetValueAsUnsigned(err)
 				if type.IsPointerType():
 					num = xx(num)
 				summary = err.fail and ("error: %s" % err) or num
-			if not suppress:
-				print("\r%s%s = %s" % (prefix, name, summary))
+		if summary:
+			print("\r%s%s = %s" % (prefix, name, summary))
+			# Can have summary AND children
 		# char buffers has contents in the summary
 		if nc and not type.name in summaryIsEnoughList and\
 			 not type.name.startswith("char[") and\
@@ -1318,24 +1394,45 @@ class DataPrintoutContext(Util):
 				nv = val.GetChildAtIndex(ii)
 				self.printValue(nv, trail)
 
+	def scanForPtrsToType(self, start, end, typeName):
+		past = set()
+		for pos in range(start, end, ptrSize):
+			self.error.Clear()
+			a0 = self.check(self.process.ReadPointerFromMemory(
+				pos, self.error))
+			if a0 in past:
+				continue
+			past.add(a0)
+			try:
+				types = self.detectTypes(a0, self.sbt)
+			except (DpcError, DebuggerError):
+				continue
+			if types.GetTypeAtIndex(0).name == typeName:
+				yield self.sbt.CreateValueFromAddress(
+					"_", lldb.SBAddress(a0, self.sbt), types.GetTypeAtIndex(0))
 
-summaryIsEnoughList = ["KString"]
+summaryIsEnoughList = ["UnicodeString", "KString"]
 
+def unxx(addrt):
+	if "," in addrt:
+		return int("".join(addrt.split(",")), 16)
+	else:
+		return int(addrt, 0)
+	
 def printType(debugger, command, result, internal_dict):
 	"""
 	Print TYPE object at ADDR. If TYPE not given or "*", detect it
 	by vtable. 
 	"""
 	commandArguments = re.split(r"\s+", command)
-	if not (len(commandArguments) in [1,2,3,4]):
-		print("usage: dt ADDR [TYPE] [REGEXP] [REGEXP_NEGATIVE]")
+	if not (len(commandArguments) in range(1, 5)):
+		print("usage: dt ADDR[-ADDR] [TYPE] [REGEXP] [REGEXP_NEGATIVE]")
 		return
 	addrt = commandArguments[0]
-	if "," in addrt:
-		a0 = int("".join(commandArguments[0].split(",")), 16)
+	if "-" in addrt:
+		a0, b0 = (unxx(s) for s in addrt.split("-"))
 	else:
-		a0 = int(addrt, 0)
-	sbt = debugger.GetSelectedTarget()
+		a0, b0 = unxx(addrt), None
 	dpc = DataPrintoutContext()
 	dpc.filter = (len(commandArguments) >= 3) and re.compile(commandArguments[2])
 	dpc.negFilter = (len(commandArguments) >= 4) and\
@@ -1346,10 +1443,15 @@ def printType(debugger, command, result, internal_dict):
 		typeName = commandArguments[1]
 		if "*" == typeName:
 			typeName = None
-	val = dpc.getValue(a0, sbt, typeName)
+	val = dpc.getValue(a0, debugger.GetSelectedTarget(), typeName)
 	data = val.GetData()
 	print("data=%s" % (data))
 	dpc.printValue(val, [])
+	if b0:
+		tp = val.GetType()
+		for p in range(a0 + tp.size, b0, tp.size):
+			val = dpc.getValue(p, debugger.GetSelectedTarget(), tp.name)
+			dpc.printValue(val, [])
 
 def printIcu(debugger, command, result, internal_dict):
 	commandArguments = re.split(r"\s+", command)
@@ -1359,6 +1461,20 @@ def printIcu(debugger, command, result, internal_dict):
 		us = icu(a0, debugger.GetSelectedTarget().process, err)
 		print(" %s %s" % (xx(a0), err.fail and err or repr(us)))
 
+def doScanForPtrsToType(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command)
+	print(commandArguments)
+	if len(commandArguments) != 1 or not commandArguments[0]:
+		print("USAGE: spt TYPE_NAME")
+		return
+	dpc = DataPrintoutContext(debugger.GetSelectedTarget())
+	sp  = dpc.sbt.process.GetSelectedThread().frames[0].sp
+	dpc.process = debugger.GetSelectedTarget().process
+	reg = dpc.getRegion(sp)
+	for val in dpc.scanForPtrsToType(
+			sp, reg.GetRegionEnd(), commandArguments[0]):
+		dpc.printValue(val, [])
+		
 def summaryIcu(val, internal_dict):
 	rs = icuOrError(val.GetLoadAddress(), val.GetProcess())
 	if len(rs) > 128:
@@ -1385,8 +1501,9 @@ class SyntheticVal:
 		if "TYPE_NUMBER" == self.vt:
 			return self.val.GetChildMemberWithName("value")
 		dpc = DataPrintoutContext()
-		objAddr = dpc.check(self.val.GetProcess().ReadPointerFromMemory(
-			self.val.GetLoadAddress() + 8, dpc.error))
+		# objAddr = dpc.check(self.val.GetProcess().ReadPointerFromMemory(
+		#	 self.val.GetLoadAddress() + 8, dpc.error))
+		objAddr = int(self.val.GetChildMemberWithName("value").GetValue())
 		if 0 == objAddr:
 			return 0
 		try:
@@ -1439,6 +1556,9 @@ def __lldb_init_module(debugger, internal_dict):
 		"command script add --overwrite -f %s.printType dt" % __name__)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.printIcu icu" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
+		__name__)
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu KString" % __name__)
 	debugger.HandleCommand(
