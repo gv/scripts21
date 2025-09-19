@@ -216,6 +216,10 @@ class Util:
 		reg = lldb.SBMemoryRegionInfo()
 		check(self.process.GetMemoryRegionInfo(ptr, reg))
 		return reg.IsMapped() and reg or None
+
+	def readPtr(self, ptr):
+		return self.check(
+			self.sbt.process.ReadPointerFromMemory(ptr, self.error))
 		
 class SymbolNotOnServer(Exception):
 	pass
@@ -1364,13 +1368,25 @@ class DataPrintoutContext(Util):
 		if 1 or val.name != type.name:
 			trail = trail + [str(val.name).replace("[", "").replace("]", "")]
 		prefix = str(val.GetAddress()) + (indent or (" %s " % ".".join(trail)))
+		# 'suppress' = no print but still iterate through the children
 		suppress = self.filter and not re.search(self.filter, prefix) and\
 			not re.search(self.filter, type.name)
 		name = "%s" % (val.GetType().name)
 		shortTrail = ".".join(trail)
 		if len(shortTrail) > 60:
 			shortTrail = "..." + shortTrail[-60:]
-		# sys.stdout.write("\r%s %s" % (val.GetAddress(), shortTrail))
+		# Hack: we don't follow pointers but will follow vector elements
+		# if there is a filter just because I need that at the moment
+		if self.filter and name.startswith("std::vector"):
+			0 and print("vector %s nta=%d of %s" % (
+				name, type.GetNumberOfTemplateArguments(),
+				type.GetTemplateArgumentType(1)))
+			# type.GetTemplateArgumentType() doesn't work on windows
+			tan = name.split("<")[1].split(",")[0]
+			taTypes = self.findTypes1(tan, self.sbt)
+			for ch in self.getVectorElementValues(
+					val.GetLoadAddress(), taTypes.GetTypeAtIndex(0)):
+				self.printValue(ch, trail)
 		summary = val.GetSummary() or val.GetValue()
 		nc = 0 if type.IsPointerType() else val.GetNumChildren()
 		if 0 == nc:
@@ -1394,6 +1410,13 @@ class DataPrintoutContext(Util):
 				nv = val.GetChildAtIndex(ii)
 				self.printValue(nv, trail)
 
+	def getVectorElementValues(self, vecPos, type):
+		p0 = self.readPtr(vecPos)
+		p1 = self.readPtr(vecPos + ptrSize)
+		for num, pos in enumerate(range(p0, p1, type.GetByteSize())):
+			yield self.sbt.CreateValueFromAddress(
+				str(num), lldb.SBAddress(pos, self.sbt), type)
+
 	def scanForPtrsToType(self, start, end, typeName):
 		past = set()
 		for pos in range(start, end, ptrSize):
@@ -1410,6 +1433,12 @@ class DataPrintoutContext(Util):
 			if types.GetTypeAtIndex(0).name == typeName:
 				yield self.sbt.CreateValueFromAddress(
 					"_", lldb.SBAddress(a0, self.sbt), types.GetTypeAtIndex(0))
+
+	def scanStackForPtrsToType(self, thread, typeName):
+		self.process = self.sbt.process
+		sp  = self.process.GetSelectedThread().frames[0].sp
+		reg = self.getRegion(sp)
+		return self.scanForPtrsToType(sp, reg.GetRegionEnd(), typeName)
 
 summaryIsEnoughList = ["UnicodeString", "KString"]
 
@@ -1464,21 +1493,20 @@ def printIcu(debugger, command, result, internal_dict):
 def doScanForPtrsToType(debugger, command, result, internal_dict):
 	commandArguments = re.split(r"\s+", command)
 	print(commandArguments)
-	if len(commandArguments) != 1 or not commandArguments[0]:
-		print("USAGE: spt TYPE_NAME")
+	if not len(commandArguments) in [1,2] or not commandArguments[0]:
+		print("USAGE: spt TYPE_NAME [FILTER_REGEXP]")
 		return
 	dpc = DataPrintoutContext(debugger.GetSelectedTarget())
-	sp  = dpc.sbt.process.GetSelectedThread().frames[0].sp
-	dpc.process = debugger.GetSelectedTarget().process
-	reg = dpc.getRegion(sp)
-	for val in dpc.scanForPtrsToType(
-			sp, reg.GetRegionEnd(), commandArguments[0]):
+	if len(commandArguments) >= 2:
+		dpc.filter = commandArguments[1]
+	for val in dpc.scanStackForPtrsToType(
+			dpc.sbt.process.GetSelectedThread(), commandArguments[0]):
 		dpc.printValue(val, [])
 		
 def summaryIcu(val, internal_dict):
 	rs = icuOrError(val.GetLoadAddress(), val.GetProcess())
-	if len(rs) > 128:
-		rs = "..." + rs[-128:]
+	if len(rs) > 1024:
+		rs = "..." + rs[-1024:]
 	return rs
 
 class SyntheticVal:
@@ -1549,6 +1577,23 @@ class SyntheticVmv:
 		dpc.valName = "callee"
 		return dpc.getValue(pcallee, self.val.GetTarget())
 
+def emplSpec0(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command)
+	if commandArguments[0]:
+		print("USAGE: e0")
+	dpc = DataPrintoutContext(debugger.GetSelectedTarget()) 
+	for val in dpc.scanStackForPtrsToType(
+			dpc.sbt.process.GetSelectedThread(),"SockObj"):
+		vec = val.GetChildMemberWithName("input").GetChildMemberWithName("data_")
+		print("vec addr %s" % (xx(vec.GetLoadAddress())))
+		page0Pos = dpc.readPtr(vec.GetLoadAddress())
+		bufPos = dpc.readPtr(page0Pos)
+		bufLen = dpc.readPtr(page0Pos + ptrSize)
+		postData = dpc.check(
+			dpc.sbt.process.ReadMemory(bufPos, bufLen, dpc.error))
+		print("curl -b cookies-htgi-dmz.txt -c cookies-htgi-dmz.txt -vL\\")
+		print("http://htgi.dmz:9999/docs/text --data\\")
+		print("'%s'" % postData.decode())
 
 def __lldb_init_module(debugger, internal_dict):
 	"To load: command script import ~/stuff/crashtools.py"
@@ -1559,6 +1604,8 @@ def __lldb_init_module(debugger, internal_dict):
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
 		__name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.emplSpec0 e0" % __name__)
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu KString" % __name__)
 	debugger.HandleCommand(
