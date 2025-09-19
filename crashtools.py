@@ -75,6 +75,7 @@ try:
 except ImportError:
 	if sys.platform.startswith("linux"):
 		sys.path.append(
+			"/usr/lib/llvm-18/lib/python3.12/site-packages",
 			"/usr/lib64/python3.6/site-packages")
 #			"/usr/lib/python2.7/dist-packages/lldb-3.8")
 	else:
@@ -829,7 +830,8 @@ class Target(Util):
 		for i in range(regions.GetSize()):
 			if not regions.GetMemoryRegionAtIndex(i, sbr):
 				raise Exception("TODO")
-			if not sbr.IsReadable() or not sbr.IsWritable() or sbr.IsExecutable():
+			# Nothing is marked writable no Windows
+			if not sbr.IsReadable() or sbr.IsExecutable():
 				continue
 			size = sbr.GetRegionEnd() - sbr.GetRegionBase()
 			if self.getThreadWithStackInRegion(sbr):
@@ -1298,10 +1300,9 @@ class DataPrintoutContext(Util):
 		self.sbt = sbt
 		
 	def detectTypes(self, a0, sbt):
+		sbt = sbt or self.sbt
 		# print("self.filter=%s" % self.filter)
 		vtb0 = sbt.process.ReadPointerFromMemory(a0, self.error)
-		if not self.filter:
-			self.check(None)
 		if not self.error.fail:
 			vtbl = sbt.ResolveLoadAddress(vtb0)
 			sc = sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
@@ -1462,7 +1463,7 @@ def printType(debugger, command, result, internal_dict):
 		a0, b0 = (unxx(s) for s in addrt.split("-"))
 	else:
 		a0, b0 = unxx(addrt), None
-	dpc = DataPrintoutContext()
+	dpc = DataPrintoutContext(debugger.GetSelectedTarget())
 	dpc.filter = (len(commandArguments) >= 3) and re.compile(commandArguments[2])
 	dpc.negFilter = (len(commandArguments) >= 4) and\
 		re.compile(commandArguments[3])
@@ -1481,6 +1482,31 @@ def printType(debugger, command, result, internal_dict):
 		for p in range(a0 + tp.size, b0, tp.size):
 			val = dpc.getValue(p, debugger.GetSelectedTarget(), tp.name)
 			dpc.printValue(val, [])
+
+def printTypeOutside(debugger, command, result, internal_dict):
+	"""
+Receive an address inside the value and find type by scanning up for the vtable
+	"""
+	commandArguments = re.split(r"\s+", command)
+	if len(commandArguments) != 1:
+		print("USAGE: pto ADDR")
+	a0 = getAddressArg(commandArguments[0])
+	dpc = DataPrintoutContext(debugger.GetSelectedTarget())
+	dpc.printValue(dpc.scanOut(a0), [])
+
+def printTypeFromVbase(debugger, command, result, internal_dict):
+	"""
+Find object by the address of an embedded virtual base class object and 
+print it
+	"""
+	commandArguments = re.split(r"\s+", command)
+	if len(commandArguments) != 2:
+		print("USAGE: dtv ADDR BNAME")
+		return
+	dpc = DataPrintoutContext(debugger.GetSelectedTarget())
+	a0 = getAddressArg(commandArguments[0])
+	v0 = dpc.getValueFromVbase(a0, commandArguments[1])
+	dpc.printValue(v0, [])
 
 def printIcu(debugger, command, result, internal_dict):
 	commandArguments = re.split(r"\s+", command)
@@ -1508,6 +1534,266 @@ def summaryIcu(val, internal_dict):
 	if len(rs) > 1024:
 		rs = "..." + rs[-1024:]
 	return rs
+
+class VmPos:
+	def __init__(self, dpc, frame, vm0):
+		if vm0:
+			self.vm = vm = dpc.getValue(vm0, dpc.sbt, "VM")
+		else:
+			self.vm = vm = dpc.scanUp(frame.sp, "VM")
+		if not vm:
+			raise Exception("VM not found up from sp=0x%x" % (sp))
+		self.prgID = prgID = vm.GetChildMemberWithName("prgID").GetValueAsUnsigned()
+		if self.prgID < 1:
+			raise Exception("Bad prgID %s" % (prgID))
+		self.progs = progs = vm.GetChildMemberWithName("progs_")
+		if prgID - 1 >= progs.GetNumChildren():
+			raise Exception("Bad prgID %s" % (prgID))
+		oScriptData = progs.GetChildAtIndex(prgID - 1)
+		spbAddr = oScriptData.GetChildMemberWithName("prog").GetChildMemberWithName(
+			"_ptr").GetValueAsUnsigned()
+		spb = dpc.getValue(spbAddr)
+		self.name = spb.GetChildMemberWithName("name")
+		self.pos = vm.GetChildMemberWithName("ip").GetChildMemberWithName(
+			"pos").GetValueAsUnsigned()
+
+def doPrintVmPos(debugger, commandArguments):
+	if commandArguments[0] and not commandArguments[0] == "*":
+		vm0 = getAddressArg(commandArguments[0])
+	else:
+		vm0 = 0
+	try:
+		vmp = VmPos(
+			DataPrintoutContext(debugger.GetSelectedTarget()), 
+			debugger.GetSelectedTarget().process.GetSelectedThread().frames[0], vm0)
+	except Exception as e:
+		print(e)
+		return
+	if vm0:
+		print("prog=%s(%s) pos=%s" % (vmp.name, vmp.prgID, vmp.pos))
+	else:
+		print("vm=%s prog=%s(%s) pos=%s" % (
+			vmp.vm.GetAddress(), vmp.name, vmp.prgID, vmp.pos))
+		
+def printVmPos(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command)
+	if not (len(commandArguments) in [1,2]):
+		print("USAGE: kp [VM_ADDR] [SOURCE_NAME]")
+		return
+	doPrintVmPos(debugger, commandArguments)
+	if len(commandArguments) > 1:
+		for fr in debugger.GetSelectedTarget().process.GetSelectedThread():
+			fp = fr.line_entry.file.basename
+			if fp and commandArguments[1] in fp:
+				print(fr)
+		debugger.HandleCommand("c")
+
+def watchVmPos(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command)
+	if len(commandArguments) != 1:
+		print("USAGE: wkp ADDR")
+		return
+	a0 = int(commandArguments[0], 0)
+	sbt = debugger.GetSelectedTarget()
+	e = lldb.SBError()
+	wp = sbt.WatchpointCreateByAddress(a0, ptrSize, lldb.SBWatchpointOptions(), e)
+	check(e)
+	# Can't attach script to WP....
+
+def createBpByNameCheck(sbt, name):
+	bp = sbt.BreakpointCreateByName(name)
+	if bp.num_locations == 0:
+		raise Exception("No locations for '%s'" % name)
+	return bp
+
+def createBpByLocationCheck(sbt, fileName, line):
+	bp = sbt.BreakpointCreateByLocation(lldb.SBFileSpec(fileName), line)
+	if bp.num_locations == 0:
+		raise Exception("No locations for '%s:%s'" % (fileName, line))
+	return bp
+
+class RefTrace(Util):
+	__slots__ = ["count", "next", "index", "dpc", "lastVmAddrIndex", "error"]
+
+	class Count():
+		__slots__ = ["add", "Del", "value", "positions"]
+		def __init__(self):
+			self.add = self.Del = self.value = 0
+			self.positions = {}
+			
+	def __init__(self, t2):
+		self.count = t2 and t2.count or RefTrace.Count()
+		self.next = RefTrace.Count()
+		self.index = t2 and t2.index or {}
+		self.acqFileName = t2 and t2.acqFileName
+		self.acqLine = t2 and t2.acqLine
+		self.varName = t2 and t2.varName
+		self.lastVmAddrIndex = {}
+		self.error = lldb.SBError()
+
+	def traceAcquisition(self, frame):
+		if not self.varName:
+			return self.traceAddRef(frame, *getPtrAndCnt(frame))
+		# Add value from user provided breakpoint
+		v0 = frame.EvaluateExpression(self.varName).GetLoadAddress()
+		self.traceAddRef(frame, v0, 1)
+
+	def traceAddRef(self, frame, p0, cnt):
+		self.count.add += 1
+		if self.count.add > self.next.add:
+			self.printCount()
+			self.next.add += 20
+		# Only trace new created
+		if cnt != 1:
+			return
+		state = self.index.get(p0)
+		if not state:
+			state = self.index[p0] = RefTrace.Count()
+		state.value = cnt + 1
+		state.add += 1
+		posc = self.getVmPosCount(frame, state)
+		if posc:
+			posc.add += 1
+
+	def getVmPosCount(self, frame, state):
+		dpc = DataPrintoutContext(frame.thread.process.target)
+		lastVm0 = self.lastVmAddrIndex.get(frame.thread.id, 0)
+		if lastVm0:
+			if dpc.detectTypeGetName(lastVm0) != "VM":
+				lastVm0 = 0
+		try:
+			vmp = VmPos(dpc, frame, lastVm0)
+		except Exception as e:
+			return
+		self.lastVmAddrIndex[frame.thread.id] = vmp.vm.GetLoadAddress()
+		pos = "%s:%s" % (vmp.name, vmp.pos)
+		posc = state.positions.get(pos)
+		if not posc:
+			posc = state.positions[pos] = RefTrace.Count()
+		return posc
+
+	def traceDelRef(self, frame, p0, cnt):
+		self.count.Del += 1
+		if self.count.Del > self.next.Del:
+			self.printCount()
+			self.next.Del += 20
+		if cnt == 1:
+			del self.index[p0]
+			return
+		else:
+			state = self.index.get(p0)
+			if not state:
+				return
+			state.value = cnt - 1
+			state.Del += 1
+		posc = self.getVmPosCount(frame, state)
+		if posc:
+			posc.Del += 1
+
+	def dump(self, sbt, filter):
+		dpc = DataPrintoutContext(sbt)
+		c0cnt = 0
+		deletedByBpCnt = 0
+		startLen = len(self.index)
+		# Copy 'items' to allow deletion
+		for p0, cnt in list(self.index.items()):
+			if cnt.Del >= cnt.add:
+				deletedByBpCnt += 1
+				continue
+			try:
+				v = dpc.getValueFromVbase(p0-ptrSize, "RefCnt")
+				p2 = "%s %s" % (v.GetType().GetName(), v.GetAddress())
+			except Exception as e:
+				p2 = str(e)
+			if not (filter in p2):
+				continue
+			i = dpc.sbt.process.ReadUnsignedFromMemory(p0, 4, self.error)
+			if self.error.fail:
+				i = self.error
+			if i == 0:
+				del self.index[p0]
+				c0cnt += 1
+				continue
+			print("p=0x%x actualCnt=%s savedCount=%s add=%s del=%s %s" % (
+				p0, i, cnt.value, cnt.add, cnt.Del, p2))
+			for pos, state in cnt.positions.items():
+				if state.add == state.Del:
+					del cnt.positions[pos]
+			if filter:
+				for pos, state in cnt.positions.items():
+					print(" %s add=%s del=%s" % (pos, state.add, state.Del))
+		self.printCount()
+		print(", %s index length, %s deleted by BP count, %s zero counts" % (
+			startLen, deletedByBpCnt, c0cnt))
+			
+	def printCount(self):
+		sys.stdout.write("\r%s adds, %s dels" % (self.count.add, self.count.Del))
+
+	def updateBreakpoints(self, sbt):
+		bpc = RefTrace.Count()
+		if hasattr(lldb, "vgRefTraceBpAdd"):
+			sbt.BreakpointDelete(lldb.vgRefTraceBpAdd.GetID())
+			bpc.Del += 1
+		if lldb.vgRefTracer.acqFileName:
+			lldb.vgRefTraceBpAdd = createBpByLocationCheck(
+				sbt, self.acqFileName, self.acqLine)
+		else:
+			lldb.vgRefTraceBpAdd = createBpByNameCheck(sbt, "RefCnt::AddRef")
+		lldb.vgRefTraceBpAdd.SetScriptCallbackFunction("%s.traceAddRef" % __name__)
+		bpc.add += 1
+		if 0 and not hasattr(lldb, "vgRefTraceBpDel"):
+			lldb.vgRefTraceBpDel = createBpByNameCheck(sbt, "RefCnt::DelRef")
+			lldb.vgRefTraceBpDel.SetScriptCallbackFunction("%s.traceDelRef" % __name__)
+			bpc.add += 1
+		print("%s breakpoints added, %s deleted" % (bpc.add, bpc.Del))
+
+
+def getPtrAndCnt(frame):
+	# Now: returns a pointer to _M_i and value of _M_i
+	# RefCnt object is 1 word before
+	this = frame.FindVariable("this")
+	t0 = this.GetValueAsUnsigned()
+	# cnt = this.GetValueForExpressionPath("->count_._M_i")
+	# This works because when we set BP in AddRef/DelRef we actually
+	# wake up in the beginning of the inlined atomic_base method
+	cnt = this.GetChildAtIndex(0).GetValueAsUnsigned()
+	# print("t0=0x%X i=%s" %(t0, cnt))
+	return (t0, cnt)
+
+def traceAddRef(frame, bp_loc, dict):
+	lldb.vgRefTracer.traceAcquisition(frame)
+	frame.GetThread().GetProcess().Continue()
+
+def traceDelRef(frame, bp_loc, dict):
+	lldb.vgRefTracer.traceDelRef(frame, *getPtrAndCnt(frame))
+	frame.GetThread().GetProcess().Continue()
+
+def startRefTracing(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command) 
+	if not commandArguments[0] in ["", "-a"]:
+		print("USAGE: tref [-a BP_FILE:BP_LINE,VAR_NAME]")
+		print("Example: tref -a soapsrv.cpp:124,scriptVars._ptr->count_")
+		return
+	lldb.vgRefTracer = RefTrace(None)
+	if commandArguments[0] == "-a":
+		p1, lldb.vgRefTracer.varName = commandArguments[1].split(",")
+		lldb.vgRefTracer.acqFileName, lldb.vgRefTracer.acqLine = p1.split(":")
+		lldb.vgRefTracer.acqLine = int(lldb.vgRefTracer.acqLine)
+	lldb.vgRefTracer.updateBreakpoints(debugger.GetSelectedTarget())
+
+def dumpRefTracing(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command) 
+	if len(commandArguments) != 1:
+		print("USAGE: dref [TYPE_NAME_SUBSTR]")
+		return
+	if not hasattr(lldb, "vgRefTracer"):
+		print("RefCnt tracing not started (command tref)")
+		return
+	lldb.vgRefTracer.dump(debugger.GetSelectedTarget(), commandArguments[0])
+
+# Update the functions, keep the data
+if hasattr(lldb, "vgRefTracer"):
+	lldb.vgRefTracer = RefTrace(lldb.vgRefTracer)
 
 class SyntheticVal:
 	def __init__(self, val, internal_dict):
@@ -1600,12 +1886,24 @@ def __lldb_init_module(debugger, internal_dict):
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.printType dt" % __name__)
 	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printTypeFromVbase dtv" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printTypeOutside pto" % __name__)
+	debugger.HandleCommand(
 		"command script add --overwrite -f %s.printIcu icu" % __name__)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
 		__name__)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.emplSpec0 e0" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printVmPos kp" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.watchVmPos wkp" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.startRefTracing tref" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.dumpRefTracing dref" % __name__)
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu KString" % __name__)
 	debugger.HandleCommand(
