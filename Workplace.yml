@@ -55,6 +55,16 @@
         alias inh="systemd-inhibit --what=handle-lid-switch"
         alias š=systemctl
       
+  - name: gdb options 
+    tags: user
+    blockinfile: 
+      path: ~/.gdbinit
+      backup: yes
+      create: yes
+      marker: "# vg: {mark} ANSIBLE MANAGED BLOCK"
+      block: |
+        set debuginfod enabled on
+
   - name: Core dumps 1/2
     tags: system1
     become: true

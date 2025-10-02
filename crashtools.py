@@ -59,6 +59,9 @@ parser.add_argument(
 	"-Y", "--threadm",
 	help="Print all words from stack N using `memory read -fA`")
 parser.add_argument(
+	"--search",
+	help="Module name to search the debuginfo for, rest of args are candidates")
+parser.add_argument(
 	"-D", "--disassembly", action="store_true",
 	help="Show disassembly of functions in the stack")
 parser.add_argument(
@@ -510,19 +513,60 @@ class Target(Util):
 				 not m.file.fullpath.startswith(self.args.storage) and\
 				 not m.file.fullpath.startswith(self.storagePath):
 				continue
-			self.runDebuggerCommand("target symbols add %s" % pdb)
-			if os.path.realpath(m.GetSymbolFileSpec().fullpath) !=\
-				 os.path.realpath(pdb):
-				raise Exception(
-					"Symbol file path must be '%s' but is '%s'" % (
-					pdb, m.GetSymbolFileSpec().fullpath))
-			self.verb("Module='%s' %d symbols in '%s' %d CUs\n" % (
-				m.GetFileSpec(),
-				m.GetNumSymbols(),
-				m.GetSymbolFileSpec(),
-				m.GetNumCompileUnits()))
+			self.matchDebugInfoFile(m, pdb)
 		self.verb("DONE\n")
 		return self
+
+	def matchDebugInfoFile(self, mod, path):
+		self.runDebuggerCommand("target symbols add %s" % pdb)
+		if os.path.realpath(mod.GetSymbolFileSpec().fullpath) !=\
+			 os.path.realpath(pdb):
+			raise DebuggerError(
+				"Symbol file path must be '%s' but is '%s'" % (
+					pdb, mod.GetSymbolFileSpec().fullpath))
+		self.verb("Module='%s' %d symbols in '%s' %d CUs\n" % (
+			mod.GetFileSpec(),
+			mod.GetNumSymbols(),
+			mod.GetSymbolFileSpec(),
+			mod.GetNumCompileUnits()))
+
+	def search(self, paths):
+		noSymMods = []
+		for m in self.sbt.modules:
+			if self.args.search == m.GetFileSpec().basename.split(".")[0]:
+				if not m.GetSymbolFileSpec().IsValid():
+					noSymMods.append(m)
+		if not noSymMods:
+			raise Exception(
+				"Module '%s' already has matching symbols" % self.args.search)
+		for path in paths:
+			if path.endswith(".zip"):
+				tmpDir = os.path.join(self.storagePath, "tmp")
+				if not os.path.isdir(tmpDir):
+					os.path.mkdir(tmpDir)
+				print("Looking in file '%s'..." % path)
+				import zipfile
+				zf = zipfile.ZipFile(path, "r")
+				dbin = None
+				for name in zf.namelist():
+					if name == self.args.search or name == self.args.search + ".pdb":
+						dbin = name
+						break
+				if not dbin:
+					continue
+				print("Extracting '%s'..." % dbin)
+				fp = zf.extract(dbin, tmpDir)
+				try:
+					self.matchDebugInfoFile(m, fp)
+				except DebuggerError:
+					print("Removing '%s'..." % fp)
+					os.unlink(fp)
+					continue
+				# Good file
+				np = os.path.join(self.storagePath, os.path.basename(fp))
+				print("Moving '%s' to '%s'" % (fp, np))
+				os.rename(fp, np)
+				
 
 	def runDebuggerCommand(self, cmd):
 		self.verb("Running '%s'..." % cmd)
@@ -1199,6 +1243,11 @@ class Tool(Util):
 			parser.print_help()
 			print("LLDB version = '%s'" % lldb.SBDebugger.GetVersionString())
 		self.args.DMPFILE.sort(key=os.path.getmtime, reverse=True)
+		if self.args.search:
+			if len(self.args.DMPFILE) < 2:
+				print("USAGE: --search=MODNAME CORE PDB1 [PDB2]...")
+			tg = Target(self.args, self.debugger).load(self.args.DMPFILE[0])
+			return tg.search(self.args.DMPFILE[1:])
 		for path in self.args.DMPFILE:
 			try:
 				t = Target(self.args, self.debugger).load(path)

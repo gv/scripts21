@@ -416,10 +416,10 @@ and starts new compile. Alternatively, start new compile as
   (command-execute 'compile)))
  
 (defun ft-at-point () "AKA go to def" (interactive)
-	   (find-tag (find-tag-default)))
+ (find-tag (Vg-current-word-or-selection)))
 
 (defun ft-next () "Other def" (interactive)
-	   (find-tag () t))
+ (find-tag () t))
 
 (defun ft-other-window-at-point () "Set other window to def"
  (interactive)
@@ -428,12 +428,14 @@ and starts new compile. Alternatively, start new compile as
    (find-tag-other-window (find-tag-default))
    (vg-message "No names at point"))))
 
+(defun Vg-current-word-or-selection-quoted ()
+ (format "\"%s\"" (Vg-current-word-or-selection)))
+
 (defun Vg-current-word-or-selection ()
-  (format "\"%s\""
-   (if (use-region-p)
-	(string-trim (buffer-substring-no-properties
-				  (region-beginning) (region-end)))
-	(or (find-tag-default) ""))))
+ (if (use-region-p)
+  (string-trim (buffer-substring-no-properties
+				(region-beginning) (region-end)))
+  (or (find-tag-default) "")))
 
 (defun google-at-point () (interactive)
  (Vg-search-at-point "https://www.google.com/search?q=%s"))
@@ -594,8 +596,8 @@ and starts new compile. Alternatively, start new compile as
 (defun Vg-tune-md ()
  (setq-local search-upper-case nil))
 
-(defun vg-tune-c ()
-  (setq c-basic-offset 4
+(defun vg-tune-c () (interactive)
+  (setq c-basic-offset 2
 		tab-width 2
 		js-indent-level 4
 		indent-tabs-mode t
@@ -655,6 +657,8 @@ and starts new compile. Alternatively, start new compile as
  (define-key org-mode-map [M-down] nil)
  (define-key org-mode-map [S-up] nil)
  (define-key org-mode-map [S-down] nil)
+ (define-key org-mode-map [M-S-left] nil)
+ (define-key org-mode-map [M-S-right] nil)
  (define-key org-mode-map (kbd "C-,") nil)
  (auto-fill-mode 1)
  (setq-local case-fold-search t)
@@ -707,15 +711,25 @@ and starts new compile. Alternatively, start new compile as
 ;; sub1 = file, sub2 = line, no column, type = warning
  '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
 (add-to-list 'compilation-error-regexp-alist 'asan)
+;; Same as asan but in parentheses
 (add-to-list 'compilation-error-regexp-alist-alist
  '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
 (add-to-list 'compilation-error-regexp-alist 'node)
 (add-to-list 'compilation-error-regexp-alist-alist
  '(meson1 "found at \\(/.+\\)" 1))
 (add-to-list 'compilation-error-regexp-alist 'meson1)
+;; A thing in brackets
 (add-to-list 'compilation-error-regexp-alist-alist
  '(make "[[]\\([^:\n]+\\):\\([0-9]+\\):" 1 2))
 (add-to-list 'compilation-error-regexp-alist 'make)
+;; Like `cmake` but without a ([^)]+):$ thing at the tail
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(cmake1
+   "^CMake \\(?:Error\\|\\(Warning\\)\\) at \\(.*\\):\\([1-9][0-9]*\\)"
+   2 3 nil (1)))
+ 
+(setq compilation-error-regexp-alist
+ '(cmake1 make asan gnu python-tracebacks-and-caml ))
 
 (defun Vg-get-local-search-command (query)
  ;; Need an interface for Spotlight search because the Finder one is no good.
@@ -725,7 +739,8 @@ and starts new compile. Alternatively, start new compile as
   (format
    "mdfind %s"
    (replace-regexp-in-string "\"\\(.+?\\)\"" "'\"\\1\"'" 
-	query))
+	(replace-regexp-in-string "#" ""
+	 query)))
   (format
    "tracker search --limit=999 --disable-color %s" query)))
 
@@ -735,7 +750,11 @@ and starts new compile. Alternatively, start new compile as
  (Vg-start-local-search
   (read-shell-command "Command: "
    (Vg-get-local-search-command
-	(Vg-current-word-or-selection)))))
+	(Vg-current-word-or-selection-quoted)))))
+
+(define-key isearch-mode-map (kbd "s-9") 'Vg-isearch2local)
+(defun Vg-isearch2local () (interactive)
+ (Vg-start-local-search (Vg-get-local-search-command isearch-string)))
 
 (defun Vg-start-local-search (cmd)
  ;; Won't run if cwd is deleted
@@ -756,14 +775,16 @@ and starts new compile. Alternatively, start new compile as
 		 (Vg-ins-search-url "s" query
 		  "https://www.google.com/search?q=%s")
 		 (Vg-ins-search-url "u"
-		  (concat query " -\"hey delphi\" -\"Roel Van de Paar\"")
-		  "https://www.youtube.com/results?search_query=%s")
+		  (concat query " -\"hey delphi\" -\"Roel Van de Paar\" -vlogize")
+		  "https://www.youtube.com/results?search_query=%s&sp=CAI%%253D")
 		 (Vg-ins-search-url "h" noquotes-query
 		  "https://github.com/search?q=%s&type=code")
 		 (Vg-ins-search-url "p" noquotes-query
 		  "https://pkgs.org/search/?q=%s")
 		 (Vg-ins-search-url "n" noquotes-query
-		  "https://packages.ubuntu.com/search?keywords=%s")
+		  "https://packages.ubuntu.com/search?suite=default&section=all&arch=any&searchon=contents&keywords=%s")
+		 (Vg-ins-search-url "b" noquotes-query
+		  "https://packages.debian.org/search?suite=default&section=all&arch=any&searchon=contents&keywords=%s")
 		 (pop-to-buffer (current-buffer)))
 		compilation-finish-functions))))
 	(funcall revert-buffer-function)))))
