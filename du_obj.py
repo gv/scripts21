@@ -4,15 +4,21 @@ from __future__ import print_function
 import argparse, os, re, subprocess, sys, datetime
 try:
 	import lldb
+	# SBError = lldb.SBError
+	from lldb import SBError
 except ImportError:
 	if sys.platform.startswith("linux"):
-		sys.path.append(
-			"/usr/lib/python2.7/dist-packages/lldb-3.8")
+		additional = [
+			"/usr/lib/llvm-18/lib/python3.12/site-packages",
+			"/usr/lib/python2.7/dist-packages/lldb-3.8"]
+		print("Adding %s..." % (additional))
+		sys.path += additional
 	else:
 		sys.path.append("\
 /Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/\
 Resources/Python")
 import lldb
+from lldb import SBError
 
 take_off = datetime.datetime.now()
 parser = argparse.ArgumentParser(description=__doc__)
@@ -1132,14 +1138,16 @@ class Diff(Calls):
 	def run(self):
 		if len(self.args.PREFIX) != 2:
 			raise Exception("Must have 2 arguments")
-		i1, i2 = (Input(x, self.args) for x in self.args.PREFIX)
+		self.i1, self.i2 = (Input(x, self.args) for x in self.args.PREFIX)
 		self.prepare([])
-		i1.compareSections(i2)
+		self.i1.compareSections(self.i2)
 		print("---------")
 		self.map1 = self.map = {}
-		i1.getSymbols(self)
+		self.i1.allMap = self.allMap = {}
+		self.i1.getSymbols(self)
 		self.map2 = self.map = {}
-		i2.getSymbols(self)
+		self.i2.allMap = self.allMap = {}
+		self.i2.getSymbols(self)
 		self.report()
 
 	def report(self):
@@ -1149,17 +1157,33 @@ class Diff(Calls):
 			if l1 == l2:
 				continue
 			printComparison(l1, l2, name)
+			self.printInstructionsIfNeeded(name)
 		for name, l1 in self.map1.items():
 			printComparison(l1, 0, name)
+			self.printInstructionsIfNeeded(name)
+
+	def printInstructionsIfNeeded(self, name):
+		if not self.args.instructions:
+			return
+		for inp in [self.i1, self.i2]:
+			ss = inp.allMap[name]
+			for sym in ss:
+				ii = sym.GetInstructions(inp.target)
+				print("%d instructions for %s" % (ii.GetSize(), sym))
+				print(ii)
 
 	def processSymbol(self, s):
 		self.map[s.name] = self.map.get(s.name, 0) + self.getSize(s)
+		ss = self.allMap.get(s.name)
+		if not ss:
+			ss = self.allMap[s.name] = []
+		ss.append(s)
 
 if sum(int(not not x) for x in (
 		args.target, args.show, args.diff, args.file, args.calls, args.map)) > 1:
 	print("Can have only 1 of --target --show --diff --file --calls --map")
 	sys.exit(1)
-if args.instructions or args.git:
+if args.git:
 	args.file = True
 if args.diff:
 	Diff(args).run()

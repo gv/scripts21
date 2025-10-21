@@ -5,7 +5,7 @@ import sys, os, argparse, subprocess, datetime, shutil, errno, re,\
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-	"--cflags", "-f", help="Compiler flags")
+	"--cflags", "-f", help="Compiler flags joined by '/'")
 parser.add_argument(
 	"--command", "-c", action="store_true", help="Run command")
 parser.add_argument(
@@ -34,9 +34,7 @@ class Paths:
 			dir = os.path.join(prefix, name.split(".")[0])
 		else:
 			dir = build.getConf("dir", ".")
-		if build.flags:
-			# first is "-"
-			dir += re.sub(" +", "", build.flags) 
+		dir += "".join(build.getFlagSuffix())
 		self.build = os.path.join(self.base, dir)
 		self.log = os.path.join(self.base, self.logName)
 		
@@ -70,14 +68,15 @@ class Input:
 		self.cc = Count("commands")
 		self.compiles = Count("compiles")
 		self.paths = paths
-		self.prefix = []
-		if "linux" == sys.platform:
+		if not args.command and "linux" == sys.platform:
 			self.prefix = ["scl", "enable", "gcc-toolset-9", "--"] 
 			# TODO
 			# It is possible to make it work by using
 			# docker run option --security-opt=seccomp:unconfined
 			# or --privilege 
 			self.prefix += ["setarch", "x86_64", "-R"]
+		else:
+			self.prefix = []
 
 	def getConf(self, name, default=None):
 		if name == "dir":
@@ -195,14 +194,21 @@ class Build:
 				os.path.dirname(self.getGit()),
 				self.env["PATH"]])
 		self.pconf = conf.get(self.platform, {})
-		self.flags = None
+		self.flagList = None
 		if self.args.cflags:
-			self.flags = re.sub(",+", " ", self.args.cflags).strip()
+			self.flagList = re.split("/+", self.args.cflags)
 		self.paths = Paths(self, base, self.args)
 		self.saved = Count("saved")
 
+	def getFlagSuffix(self):
+		if not self.flagList:
+			return ""
+		suffix = "".join(self.flagList)
+		return suffix.startswith("-") and suffix or ("." + suffix)
+
 	def run(self):
-		if not self.args.lid and sys.platform == "linux":
+		if not self.args.lid and sys.platform == "linux"\
+			 and not "SSH_CONNECTION" in os.environ:
 			cmd = ["systemd-inhibit", "--what=handle-lid-switch"] +\
 				sys.argv + ["--lid"]
 			print("Running '%s'..." %  shlex.join(cmd))
@@ -275,7 +281,7 @@ class Build:
 		for n in self.pconf["files"]:
 			a = self.paths.artefact(n)
 			self.copy(a, os.path.join(save, "%s%s-%s" % (
-				self.getName(), re.sub(" +", "", self.flags), n)))
+				self.getName(), self.getFlagSuffix(), n)))
 
 	def copy(self, a, b):
 		size = os.stat(a).st_size
@@ -306,10 +312,20 @@ class Build:
 			if hasattr(cmd, "split"):
 				cmd = cmd.split(" ")
 			cmd = sum([self.expand(a) for a in cmd], [])
-			if "cmake" == cmd[0] and "--build" != cmd[1] and self.flags:
-				cmd += [
-					"-DCMAKE_CXX_FLAGS=%s" % self.flags,
-					"-DCMAKE_C_FLAGS=%s" % self.flags]
+			if "cmake" == cmd[0] and "--build" != cmd[1] and self.flagList:
+				flags = self.flagList
+				if not flags[0].startswith("-"):
+					compiler2 = flags[0].replace("gcc", "g++")
+					if compiler2 == flags[0]:
+						compiler2 = flags[0] + "++"
+					cmd += [
+						"-DCMAKE_C_COMPILER=%s" % flags[0],
+						"-DCMAKE_CXX_COMPILER=%s" % compiler2]
+					flags = flags[1:]
+				if flags:
+					cmd += [
+						"-DCMAKE_CXX_FLAGS=%s" % " ".join(flags),
+						"-DCMAKE_C_FLAGS=%s" % " ".join(flags)]
 			prefix = self.getConf("cmdPrefix")
 			if prefix:
 				self.bl.prefix = "nice ionice -n7".split(" ") + prefix

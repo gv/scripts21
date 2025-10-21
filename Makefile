@@ -51,30 +51,25 @@ qemu%: options = --target-list=x86_64-softmmu --disable-docs\
 qemu%: options.Linux = --enable-gtk 
 
 pkg-config.options = --with-internal-glib
-__lldb.envvars = LLVM_DIR=$(Clang_DIR) Clang_DIR=$(Clang_DIR)
-__lldb.options = -DCMAKE_CXX_COMPILER=$(Clang_DIR)/bin/clang++\
-	-D CMAKE_C_COMPILER=$(Clang_DIR)/bin/clang\
-	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
-	-DLLDB_INCLUDE_TESTS=0
 swig.options += -D WITH_PCRE=OFF
-# RelWithDebInfo doesn't work!
-lldb.options =\
-	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
-	-DLLDB_USE_SYSTEM_DEBUGSERVER=ON\
-	-DLLDB_INCLUDE_TESTS=0\
-	-DLLDB_ENABLE_PYTHON=1\
-	-D CMAKE_EXE_LINKER_FLAGS=-g\
-	-D CMAKE_CXX_FLAGS_RELWITHDEBINFO="-g -Os"
 # CMAKE_INSTALL_MODE requires cmake 3.22
 llvm.options =\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
 	-D CMAKE_CXX_FLAGS_RELWITHDEBINFO='-Os -g -DNDEBUG'\
 	-D LLVM_INCLUDE_TESTS=0\
-	-D LLVM_TARGETS_TO_BUILD=X86
+	-D LLVM_TARGETS_TO_BUILD=X86\
+	-D LLDB_ENABLE_LIBEDIT=1
 # Doesn't work in cmake 3.20
 #	-DCMAKE_AR="ls nonsence"
 clang.options = $(llvm.options)\
-	-DCLANG_INCLUDE_TESTS=0
+	-D CLANG_INCLUDE_TESTS=0\
+	-D LLVM_TABLEGEN_FLAGS="-I$R/include"
+lldb.options = $(clang.options)\
+	-D CMAKE_EXE_LINKER_FLAGS=-g\
+	-D LLVM_MAIN_INCLUDE_DIR="$R/include"\
+	-D LLDB_USE_SYSTEM_DEBUGSERVER=ON\
+	-D LLDB_INCLUDE_TESTS=0\
+	-D LLDB_ENABLE_PYTHON=1
 rtags.options = -D\
 	LIBCLANG_LLVM_CONFIG_EXECUTABLE="$(Clang_DIR)/bin/llvm-config"\
 	-D CMAKE_CXX_COMPILER="$(Clang_DIR)/bin/clang++"
@@ -111,11 +106,6 @@ _build%evince: options=-Ddjvu=enabled -Dnautilus=false\
 	-Dintrospection=false -Dgtk_doc=false -Duser_doc=false\
 	-Dgspell=disabled
 
-#
-# To build with OS paths baked in:
-# scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
-#
-
 zsh%: options = --with-tcsetpgrp
 
 %emacs: options = --with-tiff=no --with-xpm=no --with-gnutls=no\
@@ -129,30 +119,32 @@ libnma%: options = -Dgcr=false -Dintrospection=false -Dvapi=false
 
 network-manager-applet.n: libnma.m
 
-libass.n: harfbuzz.m fribidi.m freetype2.m
-freetype2.m: bzip2.m zlib.m
-bzip2.m:
-	$(MAKE) bzip2.install_ DISABLE_MESON=disable
+#
+# To build with OS paths baked in:
+# scl enable gcc-toolset-12 'make evince.n B=global R=/usr'
+#
+
+_cmake.options=-DCMAKE_USE_OPENSSL=OFF 
 
 new-emacs.n: new-fake-manuals
+
 %fake-manuals:
 	mkdir -p $*emacs/info
 	echo "Fake" > $*emacs/info/emacs
 	echo "Fake" > $*emacs/info/emacs.info
 
 noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
+
 # qemu must skip meson.build
 qemu8.n_: qemu8.m_
-glib.m: pcre-8.45.m
-aqemu.make: pkg-config.install_ glib.install_ pixman.install_
 
-lldb.n: swig.m clang.m
+glib.m: pcre-8.45.m
+
+lldb.n: swig.m libedit.m clang.m 
+
 clang.m: llvm.m
 
-%ffmpeg: options = --disable-yasm
-SDL%: options = -D SDL_CAMERA=0 -D SDL_DIALOG=0 -D SDL_JOYSTICK=0\
-	-D SDL_HAPTIC=0 -D SDL_POWER=0 -D SDL_SENSOR=0 -D SDL_HIDAPI=0
-ffmpeg.n: SDL.m
+aqemu.make: pkg-config.install_ glib.install_ pixman.install_
 
 T = samba/source3
 
@@ -313,10 +305,11 @@ $R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST)
 		ninja -vC out/Release $($*.targets)) 2>&1 |tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
+# CMAKE_INSTALL_MODE=SYMLINK doesn't work with LLVMConfig.cmake
 $R/%.installed.logc: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && PATH=$(tools)$(PATH) CMAKE_INSTALL_MODE=SYMLINK\
-		ninja install) 2>&1 | tee $@.tmp.txt
+	(cd $O/$B.$* && PATH=$(tools)$(PATH)\
+		CMAKE_INSTALL_MODE=SYMLINK ninja install) 2>&1 | tee $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
 $R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST)
@@ -333,7 +326,7 @@ $R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 $($*.overrides)) 2>&1 |\
+	(cd $O/$B.$* && $(MAKE) -w V=1 VERBOSE=1 $($*.overrides) --trace) 2>&1 |\
 		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
@@ -341,10 +334,10 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 	chmod +x $(dir $<)/configure
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
-		$($*.envvars) PATH=$(tools)$R/bin:$(PATH) ACLOCAL_PATH=$R/share/aclocal\
-		$(dir $<)/configure $(options) $(options.$(platform))\
-		$($*.options) $($*.options.$(platform)) --prefix="$R" 2>&1|\
-		tee _configure.log\
+		$($*.envvars) PATH=$(tools)$R/bin:$(PATH)\
+			$(dir $<)/configure $(options) $(options.$(platform))\
+			$($*.options) $($*.options.$(platform)) --prefix="$R" 2>&1|\
+			tee _configure.log\
 
 CAFF = $(shell which caffeinate)
 $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
@@ -353,7 +346,7 @@ $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 	(cd $O/$B.$* &&\
 		echo "vg: Entering directory '$$(pwd)'" &&\
 		PATH=$(tools)$(PATH)\
-		time $(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
+		$(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
 		tee $@.tmp.txt
 	$(COMPRESS_AND) echo $^ is up to date	
 	mv -v $@.tmp.txt $@
@@ -365,7 +358,7 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 		$($*.envvars) python3 $S/$*/meson/meson.py --prefix="$R"\
 		$($*.options) $(options) $S/$*
 
-$O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)
+$O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 # If build files are present --reconfigure is mandatory, but it's an
 # error to pass that when there are none.
@@ -379,11 +372,19 @@ $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)
 
 $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
-		$($*.envvars) PATH=$(tools)$(PATH)\
-		cmake -DCMAKE_INSTALL_PREFIX="$R"\
+	@echo "vg: Entering directory '$(HERE)/$*'"
+#		--trace
+#		--debug-find-pkg=LLVM
+	$($*.envvars) PATH=$(tools)$(PATH) cmake\
+		--debug-find\
+		-DCMAKE_PREFIX_PATH="$R"\
+		-DCMAKE_INSTALL_PREFIX="$R"\
+		-DCMAKE_C_FLAGS="-I$R/include"\
+		-DCMAKE_CXX_FLAGS="-I$R/include"\
+		-DCMAKE_MODULE_PATH="$R/lib/cmake/llvm"\
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
-		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $(options)$($*.options)\
-		-S $(HERE)/$* -B $O/$B.$*
+		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
+		-S $(HERE)/$* -B $O/$B.$* 2>&1| tee _cmake.log
 
 %.makefile_in_src: %/Makefile
 	cd $(dir $^) && make --trace
@@ -392,21 +393,19 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 %/Makefile: %/configure $(MAKEFILE_LIST) $(deps)
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
-		$($*.envvars) ACLOCAL_PATH=$R/share/aclocal ./configure\
-			$(options) $($*.options) --prefix="$R" 2>&1| tee _configure.log\
+		$($*.envvars) ./configure\
+			$($*.options) --prefix="$R" 2>&1| tee _configure.log\
 
-%/Makefile.in: %/configure %/Makefile.am
+%/Makefile.in: %/configure %/Makefile.am 
 	cd $(dir $@) &&\
 		libtoolize -c -f &&\
 		automake --add-missing --copy --force-missing
 
 %/configure: %/autogen.sh
-	cd $(dir $@) && NOCONFIGURE=1 ACLOCAL_PATH=$R/share/aclocal\
-		bash -xe $< 2>&1 | tee autogen.log ||\
-		(rm configure && false)
+	cd $(dir $@) && NOCONFIGURE=1 bash $< 2>&1 | tee autogen.log
 
-%/configure: %/configure.ac  $(MAKEFILE_LIST)
-	cd $(dir $@) && ACLOCAL_PATH=$R/share/aclocal autoreconf -iv
+%/configure: %/configure.ac 
+	cd $(dir $@) && autoreconf -iv
 
 %/configure: %/configure.in 
 	cd $(dir $@) && autoheader -v && aclocal --verbose && autoconf -v

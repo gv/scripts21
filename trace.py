@@ -937,8 +937,12 @@ class Process(Util):
 
 	def getBpFrame(self, ev):
 		# What didn't work:
-		# frame = self.process.selected_thread.GetFrameAtIndex(0)
-		# frame = lldb.SBThread.GetStackFrameFromEvent(ev)
+		frame = self.process.selected_thread.GetFrameAtIndex(0)
+		if frame:
+			return frame
+		frame = lldb.SBThread.GetStackFrameFromEvent(ev)
+		if frame:
+			return frame
 		# frame = lldb.SBThread.GetThreadFromEvent(ev).GetFrameAtIndex(0)
 		#
 		# This hangs on Linux
@@ -950,7 +954,7 @@ class Process(Util):
 			if t is None:
 				print("Thread %d is '%s'" % (tn, t))
 				continue
-			# print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
+			print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
 			# Worked on Linux
 			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
 				return t.GetFrameAtIndex(0)
@@ -994,7 +998,10 @@ class Process(Util):
 				if tn != -1 and sys.platform != "darwin":
 					tn = -1
 					frame = self.getBpFrame(ev)
-					if not frame or not self.handleBreakpoint(frame, None):
+					if frame:
+						if not self.handleBreakpoint(frame, None):
+							print("BP not found")
+					else:
 						print("Bad stop frame='%s'" % frame)
 				self.process.Continue()
 			elif state == lldb.eStateRunning:

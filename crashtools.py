@@ -508,7 +508,10 @@ class Target(Util):
 					".pdb"
 				if not os.path.isfile(pdb):
 					self.verb("No symbol file '%s'\n" % pdb)
-					continue
+					pdb = os.path.join(self.storagePath, pdb)
+					if not os.path.isfile(pdb):
+						self.verb("No symbol file '%s'\n" % pdb)
+						continue
 			if 0 and\
 				 not m.file.fullpath.startswith(self.args.storage) and\
 				 not m.file.fullpath.startswith(self.storagePath):
@@ -518,12 +521,12 @@ class Target(Util):
 		return self
 
 	def matchDebugInfoFile(self, mod, path):
-		self.runDebuggerCommand("target symbols add %s" % pdb)
+		self.runDebuggerCommand("target symbols add %s" % path)
 		if os.path.realpath(mod.GetSymbolFileSpec().fullpath) !=\
-			 os.path.realpath(pdb):
+			 os.path.realpath(path):
 			raise DebuggerError(
 				"Symbol file path must be '%s' but is '%s'" % (
-					pdb, mod.GetSymbolFileSpec().fullpath))
+					path, mod.GetSymbolFileSpec().fullpath))
 		self.verb("Module='%s' %d symbols in '%s' %d CUs\n" % (
 			mod.GetFileSpec(),
 			mod.GetNumSymbols(),
@@ -531,42 +534,56 @@ class Target(Util):
 			mod.GetNumCompileUnits()))
 
 	def search(self, paths):
-		noSymMods = []
+		search = self.args.search
+		matchingModsWithoutOrWithSyms = [[],[]]
 		for m in self.sbt.modules:
-			if self.args.search == m.GetFileSpec().basename.split(".")[0]:
-				if not m.GetSymbolFileSpec().IsValid():
-					noSymMods.append(m)
-		if not noSymMods:
-			raise Exception(
-				"Module '%s' already has matching symbols" % self.args.search)
-		for path in paths:
+			bn = m.GetFileSpec().basename
+			if search == bn or search.split(".")[0] == bn.split(".")[0]:
+				matchingModsWithoutOrWithSyms[m.GetSymbolFileSpec().IsValid()].append(m)
+		self.verb("Matching=%s\n" % (matchingModsWithoutOrWithSyms))
+		if not matchingModsWithoutOrWithSyms[False]:
+			if matchingModsWithoutOrWithSyms[True]:
+				raise Exception(
+					"Modules '%s' already has matching symbols" % (
+						matchingModsWithoutOrWithSyms[True]))
+			raise Exception("No module matching '*/%s'" % self.args.search)
+		symNames = [search, search.split(".")[0] + ".pdb"]
+		cnt = WorkCount(len(paths))
+		for i, path in enumerate(paths):
+			cnt.done = i
 			if path.endswith(".zip"):
 				tmpDir = os.path.join(self.storagePath, "tmp")
 				if not os.path.isdir(tmpDir):
-					os.path.mkdir(tmpDir)
-				print("Looking in file '%s'..." % path)
+					os.mkdir(tmpDir)
+				self.print("Looking in file '%s'...\n" % path, cnt)
 				import zipfile
 				zf = zipfile.ZipFile(path, "r")
 				dbin = None
 				for name in zf.namelist():
-					if name == self.args.search or name == self.args.search + ".pdb":
+					self.print("In '%s' found '%s'\n" % (path, name))
+					bn = os.path.basename(name)
+					if bn in symNames:
 						dbin = name
 						break
 				if not dbin:
 					continue
-				print("Extracting '%s'..." % dbin)
-				fp = zf.extract(dbin, tmpDir)
+				self.print("Extracting '%s'..." % dbin, cnt)
+				fp = os.path.join(tmpDir, bn)
+				open(fp, "wb").write(zf.read(dbin))
 				try:
-					self.matchDebugInfoFile(m, fp)
-				except DebuggerError:
-					print("Removing '%s'..." % fp)
+					self.matchDebugInfoFile(matchingModsWithoutOrWithSyms[0][0], fp)
+				except DebuggerError as e:
+					self.print("%s. Removing '%s'..." % (e, fp), cnt)
 					os.unlink(fp)
 					continue
 				# Good file
 				np = os.path.join(self.storagePath, os.path.basename(fp))
 				print("Moving '%s' to '%s'" % (fp, np))
 				os.rename(fp, np)
-				
+				return 0
+		print("No symbol files found. Names = %s" % (symNames))
+		return 1
+	
 
 	def runDebuggerCommand(self, cmd):
 		self.verb("Running '%s'..." % cmd)
@@ -1242,12 +1259,12 @@ class Tool(Util):
 		if not self.args.DMPFILE:
 			parser.print_help()
 			print("LLDB version = '%s'" % lldb.SBDebugger.GetVersionString())
-		self.args.DMPFILE.sort(key=os.path.getmtime, reverse=True)
 		if self.args.search:
 			if len(self.args.DMPFILE) < 2:
 				print("USAGE: --search=MODNAME CORE PDB1 [PDB2]...")
 			tg = Target(self.args, self.debugger).load(self.args.DMPFILE[0])
 			return tg.search(self.args.DMPFILE[1:])
+		self.args.DMPFILE.sort(key=os.path.getmtime, reverse=True)
 		for path in self.args.DMPFILE:
 			try:
 				t = Target(self.args, self.debugger).load(path)
