@@ -53,23 +53,30 @@ qemu%: options.Linux = --enable-gtk
 pkg-config.options = --with-internal-glib
 swig.options += -D WITH_PCRE=OFF
 # CMAKE_INSTALL_MODE requires cmake 3.22
-llvm.options =\
+llvm_common.options =\
+	-U LLVM_DIR -U Clang_DIR\
+	-D CMAKE_CXX_COMPILER=clang++\
+	-D CMAKE_C_COMPILER=clang\
 	-D CMAKE_BUILD_TYPE=RelWithDebInfo\
 	-D CMAKE_CXX_FLAGS_RELWITHDEBINFO='-Os -g -DNDEBUG'\
-	-D LLVM_INCLUDE_TESTS=0\
 	-D LLVM_TARGETS_TO_BUILD=X86\
-	-D LLDB_ENABLE_LIBEDIT=1
+	-D LLDB_ENABLE_LIBEDIT=1\
+	-D BUILD_SHARED_LIBS=1
+llvm.options = $(llvm_common.options) -D LLVM_INCLUDE_TESTS=1\
+	-D LLVM_INSTALL_GTEST=1
 # Doesn't work in cmake 3.20
 #	-DCMAKE_AR="ls nonsence"
-clang.options = $(llvm.options)\
+clang.options = $(llvm_common.options)\
 	-D CLANG_INCLUDE_TESTS=0\
+	-D LLVM_INCLUDE_TESTS=0\
 	-D LLVM_TABLEGEN_FLAGS="-I$R/include"
 lldb.options = $(clang.options)\
 	-D CMAKE_EXE_LINKER_FLAGS=-g\
 	-D LLVM_MAIN_INCLUDE_DIR="$R/include"\
 	-D LLDB_USE_SYSTEM_DEBUGSERVER=ON\
-	-D LLDB_INCLUDE_TESTS=0\
+	-D LLDB_INCLUDE_TESTS=1\
 	-D LLDB_ENABLE_PYTHON=1
+lld.options = $(clang.options)
 rtags.options = -D\
 	LIBCLANG_LLVM_CONFIG_EXECUTABLE="$(Clang_DIR)/bin/llvm-config"\
 	-D CMAKE_CXX_COMPILER="$(Clang_DIR)/bin/clang++"
@@ -346,7 +353,7 @@ $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 	(cd $O/$B.$* &&\
 		echo "vg: Entering directory '$$(pwd)'" &&\
 		PATH=$(tools)$(PATH)\
-		$(CAFF) nice ninja -d explain -vj3 ) 2>&1 |\
+		$(CAFF) nice ninja $($*.target) -d explain -vj3 ) 2>&1 |\
 		tee $@.tmp.txt
 	$(COMPRESS_AND) echo $^ is up to date	
 	mv -v $@.tmp.txt $@
@@ -375,13 +382,13 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	@echo "vg: Entering directory '$(HERE)/$*'"
 #		--trace
 #		--debug-find-pkg=LLVM
+#		--debug-find
 	$($*.envvars) PATH=$(tools)$(PATH) cmake\
-		--debug-find\
 		-DCMAKE_PREFIX_PATH="$R"\
 		-DCMAKE_INSTALL_PREFIX="$R"\
 		-DCMAKE_C_FLAGS="-I$R/include"\
 		-DCMAKE_CXX_FLAGS="-I$R/include"\
-		-DCMAKE_MODULE_PATH="$R/lib/cmake/llvm"\
+		-DCMAKE_MODULE_PATH="$R/lib/cmake/llvm:$R/lib/cmake/clang"\
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
 		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
 		-S $(HERE)/$* -B $O/$B.$* 2>&1| tee _cmake.log
