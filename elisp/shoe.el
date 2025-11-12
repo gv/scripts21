@@ -162,6 +162,7 @@
 ;; Cmd is M- and alt doesn't do anything
 (define-key global-map [M-next] 'ft-at-point)
 (define-key global-map [M-prior] 'pop-tag-mark)
+(define-key global-map [C-insert] 'Vg-copy)
 ;; End of code navigation
 
 (define-key global-map [f1] 'man)
@@ -204,7 +205,7 @@
 (define-key global-map (kbd "s-2") 'other-window)
 ;; Go to the notes
 (define-key global-map (kbd "s-3")
- (lambda () (interactive) (find-file "~/20note.org")))
+ (lambda () (interactive) (find-file "~/stuff/20note.org")))
 (define-key global-map (kbd "s-4")
  (lambda () (interactive) (switch-to-buffer "*compilation*")))
 (define-key global-map (kbd "s-5")
@@ -437,7 +438,14 @@ and starts new compile. Alternatively, start new compile as
 				(region-beginning) (region-end)))
   (or (find-tag-default) "")))
 
-(defun google-at-point () (interactive)
+(defun Vg-copy () (interactive)
+ (if (use-region-p)
+  (command-execute 'copy-region-as-kill)
+  (let ((x (find-tag-default)))
+   (kill-new x)
+   (vg-message "Copied '%s'" x))))
+
+ (defun google-at-point () (interactive)
  (Vg-search-at-point "https://www.google.com/search?q=%s"))
 
 (define-key global-map [f4]
@@ -727,9 +735,12 @@ and starts new compile. Alternatively, start new compile as
  '(cmake1
    "^CMake \\(?:Error\\|\\(Warning\\)\\) at \\(.*\\):\\([1-9][0-9]*\\)"
    2 3 nil (1)))
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(meson-install "^Installing \\(/[^ ]+\\)" 1 nil nil 1))
+(add-to-list 'compilation-error-regexp-alist 'meson-install)
  
 (setq compilation-error-regexp-alist
- '(cmake1 make asan gnu python-tracebacks-and-caml ))
+ '(cmake1 make asan gnu python-tracebacks-and-caml meson-install bash)) 
 
 (defun Vg-get-local-search-command (query)
  ;; Need an interface for Spotlight search because the Finder one is no good.
@@ -742,7 +753,7 @@ and starts new compile. Alternatively, start new compile as
 	(replace-regexp-in-string "#" ""
 	 query)))
   (format
-   "tracker search --limit=999 --disable-color %s" query)))
+   "localsearch search --limit=999 --disable-color %s" query)))
 
 
 (defun tracker-search () (interactive)
@@ -865,6 +876,7 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'auto-mode-alist '("\\.d\\'" . awk-mode))
 (add-to-list 'auto-mode-alist '("Makefile" . makefile-mode))
 (add-to-list 'auto-mode-alist '("\\.md\\.txt\\'" . markdown-mode))
+(add-to-list 'auto-mode-alist '("\\.logc\\'" . compilation-mode))
 (make-face-bold 'font-lock-keyword-face)
 (make-face-italic 'font-lock-string-face)
 (which-function-mode 1)
@@ -891,7 +903,7 @@ and starts new compile. Alternatively, start new compile as
  (let* ((bn "*git-log*") proc
 		(cmd (append
 			  (if (equal window-system 'x)
-			   '("systemd-inhibit" "--what=handle-lid-switch"))
+			   '("systemd-inhibit" "--what=sleep"))
 			  '("git" "log") (split-string options))))
   (require 'vc-git)
   ;; TODO Need new buffer bc old CWD remains 
@@ -1053,7 +1065,7 @@ and starts new compile. Alternatively, start new compile as
  (tags-reset-tags-tables)
  (visit-tags-table path local))
 
-(setq compile-command "systemd-inhibit --what=handle-lid-switch\
+(setq compile-command "systemd-inhibit --what=sleep\
  ionice -c3 scl enable gcc-toolset-13 -- make -k")
 (setq compile-history (list compile-command))
 (savehist-mode)
@@ -1071,7 +1083,12 @@ and starts new compile. Alternatively, start new compile as
 (setq shell-command-switch "-ic") ;; Load aliases in .bashrc
 (setq process-connection-type nil)  ;; No pty
 ;; ^^ This lets us run sudo with interactive
-(setenv "SUDO_ASKPASS" "/usr/libexec/openssh/gnome-ssh-askpass")
+(let ((ap (getenv "SUDO_ASKPASS")))
+ (unless (and ap (file-exists-p ap))
+  (setenv "SUDO_ASKPASS" "/usr/lib/openssh/gnome-ssh-askpass")))
+(let ((ap (getenv "SUDO_ASKPASS")))
+ (unless (and ap (file-exists-p ap))
+  (setenv "SUDO_ASKPASS" "/usr/libexec/openssh/gnome-ssh-askpass")))
 (setq-default case-fold-search nil case-replace nil
 			  dabbrev-case-fold-search nil)
 (setq revert-without-query '(".*"))
@@ -1106,6 +1123,14 @@ and starts new compile. Alternatively, start new compile as
 (setq sh-basic-offset 2)
 (setq compilation-skip-threshold 2)
 (setq recentf-max-saved-items 1024)
+(setq which-func-format
+  `("["
+    (:propertize which-func-current
+	 local-map ,which-func-keymap
+	 face which-func
+	 mouse-face mode-line-highlight
+     help-echo (eval (cadr which-func-current)))
+    "]"))
 (menu-bar-mode -1)
 (split-window-right)
 (recentf-open-files)

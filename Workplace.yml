@@ -15,11 +15,11 @@
         test -n "$COLORTERM" && renice +12 $$ && ionice -c3 -n7 -p $$
         shopt -s autocd
         alias 2e=~/stuff/2emacs.py
-        alias inh="systemd-inhibit --what=handle-lid-switch"
+        alias inh="systemd-inhibit --what=sleep"
         alias inhj="inh journalctl -f"
         # Handle other aliases
         # Without backslash: $0 $@ evaluated after alias subst
-        alias in0='systemd-inhibit --what=handle-lid-switch \
+        alias in0='systemd-inhibit --what=sleep \
         bash -ic "eval \$0 \$@"'
         alias g3="bash -ecx 'git stash && git pull --rebase --recurse-submodules && git stash apply'"
         alias d3='docker run --rm -v $(pwd):$(pwd) -w $(pwd)'
@@ -41,6 +41,18 @@
         alias m1='zenity --info --text'
         alias š=systemctl
       
+  - name: gdb options 
+    tags: user
+    blockinfile: 
+      path: ~/.gdbinit
+      backup: yes
+      create: yes
+      marker: "# vg: {mark} ANSIBLE MANAGED BLOCK"
+      block: |
+        set pagination off
+        set filename-display absolute
+        set debuginfod enabled on
+
   - name: Bash aliases for root
     tags: user
     become: true
@@ -52,19 +64,9 @@
       validate: bash -x %s
       block: |
         shopt -s autocd
-        alias inh="systemd-inhibit --what=handle-lid-switch"
+        alias inh="systemd-inhibit --what=sleep"
         alias š=systemctl
       
-  - name: gdb options 
-    tags: user
-    blockinfile: 
-      path: ~/.gdbinit
-      backup: yes
-      create: yes
-      marker: "# vg: {mark} ANSIBLE MANAGED BLOCK"
-      block: |
-        set debuginfod enabled on
-
   - name: Core dumps 1/2
     tags: system1
     become: true
@@ -88,4 +90,5 @@
       backup: yes
       line: >-
         ssh-ed25519
-        AAAAC3NzaC1lZDI1NTE5AAAAIGQcUAv+wO0lKeZEXH+Pawnr4L4fTJZADaQopwISzivs x
+        AAAAC3NzaC1lZDI1NTE5AAAAIGQcUAv+wO0lKeZEXH+Pawnr4L4fTJZADaQopwISzivs
+          x

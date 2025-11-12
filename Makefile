@@ -46,9 +46,10 @@ qemu.envvars.Darwin = PKG_CONFIG=$R/bin/pkg-config
 qemu6.envvars.Darwin = $(qemu.envvars.Darwin)
 qemu%: options = --target-list=x86_64-softmmu --disable-docs\
 	--disable-guest-agent --disable-curl\
-	--disable-live-block-migration --enable-slirp
+	--enable-slirp
 # --enable-virtfs works only on Linux
-qemu%: options.Linux = --enable-gtk 
+qemu%: options.Linux = --enable-gtk
+qemu%: options.Darwin = --disable-live-block-migration 
 
 pkg-config.options = --with-internal-glib
 swig.options += -D WITH_PCRE=OFF
@@ -63,7 +64,8 @@ llvm_common.options =\
 	-D LLDB_ENABLE_LIBEDIT=1\
 	-D BUILD_SHARED_LIBS=1
 llvm.options = $(llvm_common.options) -D LLVM_INCLUDE_TESTS=1\
-	-D LLVM_INSTALL_GTEST=1
+	-D LLVM_INSTALL_GTEST=1\
+	-D CMAKE_BUILD_WITH_INSTALL_RPATH=1
 # Doesn't work in cmake 3.20
 #	-DCMAKE_AR="ls nonsence"
 clang.options = $(llvm_common.options)\
@@ -120,8 +122,9 @@ zsh%: options = --with-tcsetpgrp
 
 # If I use PKG_CONFIG_LIBDIR system packages are not found
 %network-manager-applet %nma1: options = -Dwwan=false -Dteam=false
-%network-manager-applet %nma1:\
-	envvars = PKG_CONFIG_PATH=$R/lib64/pkgconfig
+%network-manager-applet %nma1 %xfce4-panel %thunar %thunar0 %thunar1:\
+	envvars =\
+	PKG_CONFIG_PATH=$R/lib64/pkgconfig:$R/lib/x86_64-linux-gnu/pkgconfig
 libnma%: options = -Dgcr=false -Dintrospection=false -Dvapi=false
 
 network-manager-applet.n: libnma.m
@@ -132,6 +135,15 @@ network-manager-applet.n: libnma.m
 #
 
 _cmake.options=-DCMAKE_USE_OPENSSL=OFF 
+
+xfce4-panel.n: libxfce4ui.m
+
+%bluez: options = --enable-obex --disable-client --disable-mesh
+
+libass.n: harfbuzz.m fribidi.m freetype2.m
+freetype2.m: bzip2.m zlib.m
+bzip2.m:
+	$(MAKE) bzip2.install_ DISABLE_MESON=disable
 
 new-emacs.n: new-fake-manuals
 
@@ -144,14 +156,30 @@ noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
 
 # qemu must skip meson.build
 qemu8.n_: qemu8.m_
+qemu%.n_: qemu%.m_
+glib.m: pcre-8.45.m
+aqemu.make: pkg-config.install_ glib.install_ pixman.install_
 
 glib.m: pcre-8.45.m
 
-lldb.n: swig.m libedit.m clang.m 
-
+lldb.Darwin.deps = swig.m libedit.m
+lldb.n: $(lldb.$(platform).deps) clang.m
+lldb.apt:
+	apt install --no-install-recommends libedit-dev swig
 clang.m: llvm.m
 
 aqemu.make: pkg-config.install_ glib.install_ pixman.install_
+
+heaptrack.apt:
+	apt install -y libunwind-dev libdw-dev libboost-dev\
+		libboost-iostreams-dev libboost-program-options-dev\
+		libboost-system-dev libboost-filesystem-dev
+%heaptrack: options = -Wno-dev
+
+thunar.n: libxfce4ui.m
+thunar%: options = -Wvte=true
+vte%: options = -Dgnutls=false -Dvapi=false
+
 
 T = samba/source3
 
@@ -279,7 +307,7 @@ $(AFSCTOOL.Darwin): $(AFSCTOOL.Darwin).c
 	$O/$B.%/%.ninja.success.logc $R/%.waf.successful.log.txt\
 	$(AFSCTOOL)
 
-$f:
+$f $(lldb.t):
 	echo Force=$f
 
 noinstall.% %.noinstall %.n:
@@ -305,14 +333,12 @@ _build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
 	PATH=$(tools)$(PATH) $(MAKE) $R/$*.make.successful.log.txt 
 	$(COMPRESS_AND) echo $^ is up to date	
 
-
-$R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST)
+$R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST) $(%.t)
 	(cd $* && GREP_OPTIONS= $($*.envvars)\
 		gyp --depth=. --format=ninja-linux &&\
-		ninja -vC out/Release $($*.targets)) 2>&1 |tee -a $@.tmp.txt
+		ninja -vC out/Release $($*.t)) 2>&1 |tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
-# CMAKE_INSTALL_MODE=SYMLINK doesn't work with LLVMConfig.cmake
 $R/%.installed.logc: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* && PATH=$(tools)$(PATH)\
@@ -348,12 +374,12 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 
 CAFF = $(shell which caffeinate)
 $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
-	$(MAKEFILE_LIST) $f
+	$(MAKEFILE_LIST) $f $(%.t)
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* &&\
 		echo "vg: Entering directory '$$(pwd)'" &&\
 		PATH=$(tools)$(PATH)\
-		$(CAFF) nice ninja $($*.target) -d explain -vj3 ) 2>&1 |\
+		$(CAFF) nice ninja $($*.t) -d explain -vj3 ) 2>&1 |\
 		tee $@.tmp.txt
 	$(COMPRESS_AND) echo $^ is up to date	
 	mv -v $@.tmp.txt $@
@@ -365,14 +391,16 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 		$($*.envvars) python3 $S/$*/meson/meson.py --prefix="$R"\
 		$($*.options) $(options) $S/$*
 
-$O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST)
+$O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)\
+		$f
+	pkg-config --list-all
 	mkdir -p $O/$B.$*
 # If build files are present --reconfigure is mandatory, but it's an
 # error to pass that when there are none.
 # TODO Change in $(options) doesn't work now
 	test -f $@ ||\
 		$($*.envvars) $(envvars)\
-		PATH=$(tools)$(PATH) CFLAGS="-I$R/include $(cflags)" python3.9\
+		PATH=$(tools)$(PATH) CFLAGS="-I$R/include $(cflags)" python3\
 		$S/meson/meson.py setup\
 		--prefix="$R" $($*.options) $(options) $O/$B.$* $S/$* 2>&1|\
 		tee $O/$B.$*/meson_.log
@@ -383,7 +411,7 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 #		--trace
 #		--debug-find-pkg=LLVM
 #		--debug-find
-	$($*.envvars) PATH=$(tools)$(PATH) cmake\
+	$($*.envvars) PATH=$(tools)$(PATH) CMAKE_INSTALL_MODE=SYMLINK cmake\
 		-DCMAKE_PREFIX_PATH="$R"\
 		-DCMAKE_INSTALL_PREFIX="$R"\
 		-DCMAKE_C_FLAGS="-I$R/include"\

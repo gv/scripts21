@@ -2,23 +2,6 @@
 from __future__ import print_function
 "Analyze debug info and report .text size contribution per directory/file/line"
 import argparse, os, re, subprocess, sys, datetime
-try:
-	import lldb
-	# SBError = lldb.SBError
-	from lldb import SBError
-except ImportError:
-	if sys.platform.startswith("linux"):
-		additional = [
-			"/usr/lib/llvm-18/lib/python3.12/site-packages",
-			"/usr/lib/python2.7/dist-packages/lldb-3.8"]
-		print("Adding %s..." % (additional))
-		sys.path += additional
-	else:
-		sys.path.append("\
-/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/\
-Resources/Python")
-import lldb
-from lldb import SBError
 
 take_off = datetime.datetime.now()
 parser = argparse.ArgumentParser(description=__doc__)
@@ -35,7 +18,9 @@ parser.add_argument(
 	"--file", "-f", action='store_true',
 	help="""\
 Line mode: print annotated contents of every file 
-(unnamed args must be file paths""")
+(unnamed args must be file paths)
+Use --git to get file list from git
+""")
 parser.add_argument(
 	"--instructions", "-g", action="store_true",
 	help="Print disassembled instructions under each line (implies -f)")
@@ -93,12 +78,40 @@ parser.add_argument(
 parser.add_argument(
 	"--diff", action="store_true", help="Compare section sizes (2 args)")
 parser.add_argument(
+	"--info", action="store_true",
+	help="Print some data about debuginfo files")
+parser.add_argument(
+	"--match", help="match debuginfo files to this file")
+parser.add_argument(
+	"--lldb", "-P", help="Path to lldb")
+parser.add_argument(
 	"PREFIX", nargs="*",
 	help="Dir or file paths to count the code size for each")
 args = parser.parse_args()
 
-# print("pid %d" % os.getpid())
-# sys.stdin.read(1)
+if args.lldb:
+	dir = subprocess.check_output([args.lldb, "-P"]).strip().decode()
+	print("Adding '%s'..." % dir)
+	sys.path.append(dir)
+	
+try:
+	import lldb
+	# SBError = lldb.SBError
+	from lldb import SBError
+except ImportError:
+	if sys.platform.startswith("linux"):
+		importDirs = [
+			"/usr/lib/llvm-18/lib/python3.12/site-packages",
+			"/usr/lib/python2.7/dist-packages/lldb-3.8"]
+	else:
+		importDirs = ["\
+/Library/Developer/CommandLineTools/Library/PrivateFrameworks/\
+LLDB.framework/Resources/Python"]
+	print("Adding %s..." % (importDirs))
+	sys.path += importDirs
+	
+import lldb
+from lldb import SBError
 
 def nn(n):
 	return ",".join(re.findall(r"\d{1,3}", str(n)[::-1]))[::-1]
@@ -1134,13 +1147,31 @@ class Show:
 		for input in self.inputs:
 			input.printContent(path, line)
 
+class Info:
+	def __init__(self, args):
+		self.args = args
+
+	def run(self):
+		match = self.args.match and \
+			lldb.SBModuleSpecList.GetModuleSpecifications(self.args.match)
+		for path in self.args.PREFIX:
+			specs = lldb.SBModuleSpecList.GetModuleSpecifications(path)
+			print(specs)
+			if match:
+				matched = specs.FindMatchingSpecs(match.GetSpecAtIndex(0))
+				if matched.GetSize():
+					print("Matched = %s" % matched)
+
 class Diff(Calls):
 	def run(self):
 		if len(self.args.PREFIX) != 2:
 			raise Exception("Must have 2 arguments")
-		self.i1, self.i2 = (Input(x, self.args) for x in self.args.PREFIX)
+		self.i1, self.i2 = inputs =\
+			[Input(x, self.args) for x in self.args.PREFIX]
 		self.prepare([])
 		self.i1.compareSections(self.i2)
+		fileSizes = [i.getFileSize() for i in inputs]
+		printComparison(fileSizes[0], fileSizes[1], "File size")
 		print("---------")
 		self.map1 = self.map = {}
 		self.i1.allMap = self.allMap = {}
@@ -1191,6 +1222,8 @@ elif args.target:
 	r = CallGraph(args).run()
 elif args.show:
 	r = Show(args).run()
+elif args.info:
+	r = Info(args).run()
 else:	
 	((args.all or args.calls or args.functions or args.ds or
 		args.sfp or args.data) and Calls or\

@@ -209,8 +209,7 @@ class Build:
 	def run(self):
 		if not self.args.lid and sys.platform == "linux"\
 			 and not "SSH_CONNECTION" in os.environ:
-			cmd = ["systemd-inhibit", "--what=handle-lid-switch"] +\
-				sys.argv + ["--lid"]
+			cmd = ["systemd-inhibit", "--what=sleep"] + sys.argv + ["--lid"]
 			print("Running '%s'..." %  shlex.join(cmd))
 			os.execvp(cmd[0], cmd)
 		msg = code = 0
