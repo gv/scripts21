@@ -73,6 +73,65 @@ parser.add_argument(
 parser.add_argument(
 	"-l", "--long", action="store_true", help="Not abbrev build ids")
 
+def __lldb_init_module(debugger, internal_dict):
+	"To load: command script import ~/stuff/crashtools.py"
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printType dt" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printTypeFromVbase dtv" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printTypeOutside pto" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printIcu icu" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
+		__name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.emplSpec0 e0" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printVmPos kp" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.watchVmPos wkp" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.startRefTracing tref" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.dumpRefTracing dref" % __name__)
+	debugger.HandleCommand(
+		"command script add --overwrite -f %s.telescope xt" % __name__)
+	debugger.HandleCommand(
+		"type summary add -F %s.summaryIcu KString" % __name__)
+	debugger.HandleCommand(
+		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
+	debugger.HandleCommand(
+		"type summary add -F %s.summaryVal Val" % __name__)
+	debugger.HandleCommand(
+		"type synthetic add Val --python-class %s.SyntheticVal" %
+		__name__)
+	if 0:
+		debugger.HandleCommand(
+			"type synthetic add FunStackInfo --python-class %s.SyntheticFsi" %
+			__name__)
+	debugger.HandleCommand(
+		"type synthetic add __VMvars --python-class %s.SyntheticVmv" %
+		__name__)
+	print("%s loaded" % __name__)
+
+def telescope(debugger, command, result, internal_dict):
+	cmdl = re.split(r"\s+", command)
+	if len(cmdl) > 2:
+		print("USAGE: xt")
+	class NoArgs:
+		def __init__(self):
+			self.storage = None
+			self.download = self.long = False
+	tg = Target(NoArgs(), debugger, debugger.GetSelectedTarget())
+	tg.process = tg.sbt.process
+	th = tg.process.GetSelectedThread()
+	start = cmdl[0] and unxx(cmdl[0]) or th.frames[0].sp
+	stack = tg.printStackInfo(th)
+	end = len(cmdl) > 1 and unxx(cmdl[1]) or stack.GetRegionEnd()
+	tg.printPointers(start, end, stack)
+
 try:
 	import lldb
 except ImportError:
@@ -1365,13 +1424,12 @@ class DataPrintoutContext(Util):
 		self.printed = set()
 		self.sbt = sbt
 		
-	def detectTypes(self, a0, sbt):
-		sbt = sbt or self.sbt
+	def detectTypes(self, a0):
 		# print("self.filter=%s" % self.filter)
-		vtb0 = sbt.process.ReadPointerFromMemory(a0, self.error)
+		vtb0 = self.sbt.process.ReadPointerFromMemory(a0, self.error)
 		if not self.error.fail:
-			vtbl = sbt.ResolveLoadAddress(vtb0)
-			sc = sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
+			vtbl = self.sbt.ResolveLoadAddress(vtb0)
+			sc = self.sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
 				vtbl, 255 | lldb.eSymbolContextVariable)
 			0 and print("vtb0=%x sc='%s' cu='%s' %s" % (
 				vtb0, sc, sc.GetCompileUnit(), sc.symbol))
@@ -1379,42 +1437,49 @@ class DataPrintoutContext(Util):
 			if (len(pp) > 1):
 				return self.findTypes1(pp[1], sbt)
 		# Sometimes can't resolve vtable - check for desstructor
-		dest0 = self.check(sbt.process.ReadPointerFromMemory(vtb0, self.error))
-		destr = lldb.SBAddress(dest0, sbt)
+		dest0 = self.check(
+			self.sbt.process.ReadPointerFromMemory(vtb0, self.error))
+		destr = lldb.SBAddress(dest0, self.sbt)
 		# "function" works with PDB debug info
 		name = destr.function.name or destr.symbol.name
+		0 and print("%s: %s" % (xx(a0), name))
 		if not name:
 			raise DpcError("Head not resolvable %s" % (xx(dest0)))
 		if "~" in name:
-			return self.findTypes1(name.split("~")[0][:-2], sbt)
+			return self.findTypes1(name.split("~")[0][:-2])
 		name = name.split("::")[0]
-		types = self.findTypes(name, sbt)
-		if len(types) == 1:
-			return types
+		types1 = self.findTypes(name)
 		# Heuristics
 		name = name.split("<")[-1].split(",")[0]
-		return self.findTypes1(name, sbt)
+		types = self.findTypes1(name)
+		if len(types) == 1:
+			return types
+		if len(types1) == 1:
+			return types1
+		raise Exception("No types '%s'" % (typeName))
 	
-	def findTypes(self, typeName, sbt):
+	def findTypes(self, typeName):
+		# print("'%s' = %d types" % (typeName, sbt.FindTypes(typeName).GetSize()))
+		return self.sbt.FindTypes(typeName)
 		for im in sbt.modules:
 			if len(types := im.FindTypes(typeName)):
 				break
 		return types
 
-	def findTypes1(self, typeName, sbt):
-		types = self.findTypes(typeName, sbt)
+	def findTypes1(self, typeName):
+		types = self.findTypes(typeName)
 		if len(types) != 1:
 			raise DpcError("%d types '%s'" % (len(types), typeName))
 		return types
 
-	def getValue(self, a0, sbt, typeName=None):
+	def getValue(self, a0, typeName=None):
 		if typeName:
-			types = self.findTypes1(typeName, sbt)
+			types = self.findTypes1(typeName)
 		else:
-			types = self.detectTypes(a0, sbt)
+			types = self.detectTypes(a0)
 		typeName = types.GetTypeAtIndex(0).name
-		addr = lldb.SBAddress(a0, sbt)
-		return sbt.CreateValueFromAddress(
+		addr = lldb.SBAddress(a0, self.sbt)
+		return self.sbt.CreateValueFromAddress(
 			self.valName or ("*"+typeName), addr, types.GetTypeAtIndex(0))
 		
 	def printValue(self, val, trail):
@@ -1450,7 +1515,7 @@ class DataPrintoutContext(Util):
 				type.GetTemplateArgumentType(1)))
 			# type.GetTemplateArgumentType() doesn't work on windows
 			tan = name.split("<")[1].split(",")[0]
-			taTypes = self.findTypes1(tan, self.sbt)
+			taTypes = self.findTypes1(tan)
 			for ch in self.getVectorElementValues(
 					val.GetLoadAddress(), taTypes.GetTypeAtIndex(0)):
 				self.printValue(ch, trail)
@@ -1465,7 +1530,9 @@ class DataPrintoutContext(Util):
 					num = xx(num)
 				summary = err.fail and ("error: %s" % err) or num
 		if summary:
-			print("\r%s%s = %s" % (prefix, name, summary))
+			print("\r%s%s%s = %s" % (
+				xx(val.GetAddress().GetLoadAddress(self.sbt)),
+				prefix, name, summary))
 			# Can have summary AND children
 		# char buffers has contents in the summary
 		if nc and not type.name in summaryIsEnoughList and\
@@ -1485,6 +1552,9 @@ class DataPrintoutContext(Util):
 				str(num), lldb.SBAddress(pos, self.sbt), type)
 
 	def scanForPtrsToType(self, start, end, typeName):
+		targetType = self.findTypes1(
+			isinstance(typeName, list) and typeName[0] or typeName).\
+			GetTypeAtIndex(0)
 		past = set()
 		for pos in range(start, end, ptrSize):
 			self.error.Clear()
@@ -1494,12 +1564,14 @@ class DataPrintoutContext(Util):
 				continue
 			past.add(a0)
 			try:
-				types = self.detectTypes(a0, self.sbt)
+				types = self.detectTypes(a0)
 			except (DpcError, DebuggerError):
 				continue
-			if types.GetTypeAtIndex(0).name == typeName:
+			tn = re.sub(r"\s+", "", types.GetTypeAtIndex(0).name)
+			if tn == typeName or isinstance(typeName, list) and tn in typeName:
 				yield self.sbt.CreateValueFromAddress(
-					"_", lldb.SBAddress(a0, self.sbt), types.GetTypeAtIndex(0))
+					"_", lldb.SBAddress(a0, self.sbt), targetType)
+			0 and print("%s: %s" % (xx(a0), types.GetTypeAtIndex(0).name))
 
 	def scanStackForPtrsToType(self, thread, typeName):
 		self.process = self.sbt.process
@@ -1539,7 +1611,7 @@ def printType(debugger, command, result, internal_dict):
 		typeName = commandArguments[1]
 		if "*" == typeName:
 			typeName = None
-	val = dpc.getValue(a0, debugger.GetSelectedTarget(), typeName)
+	val = dpc.getValue(a0, typeName)
 	data = val.GetData()
 	print("data=%s" % (data))
 	dpc.printValue(val, [])
@@ -1584,7 +1656,6 @@ def printIcu(debugger, command, result, internal_dict):
 
 def doScanForPtrsToType(debugger, command, result, internal_dict):
 	commandArguments = re.split(r"\s+", command)
-	print(commandArguments)
 	if not len(commandArguments) in [1,2] or not commandArguments[0]:
 		print("USAGE: spt TYPE_NAME [FILTER_REGEXP]")
 		return
@@ -1880,14 +1951,14 @@ class SyntheticVal:
 			return self.val.GetChildMemberWithName("funInfo").Dereference()
 		if "TYPE_NUMBER" == self.vt:
 			return self.val.GetChildMemberWithName("value")
-		dpc = DataPrintoutContext()
+		dpc = DataPrintoutContext(self.val.GetTarget())
 		# objAddr = dpc.check(self.val.GetProcess().ReadPointerFromMemory(
 		#	 self.val.GetLoadAddress() + 8, dpc.error))
 		objAddr = int(self.val.GetChildMemberWithName("value").GetValue())
 		if 0 == objAddr:
 			return 0
 		try:
-			return dpc.getValue(objAddr, self.val.GetTarget())
+			return dpc.getValue(objAddr)
 		except DebuggerError as e:
 			return str(e)
 
@@ -1935,7 +2006,8 @@ def emplSpec0(debugger, command, result, internal_dict):
 		print("USAGE: e0")
 	dpc = DataPrintoutContext(debugger.GetSelectedTarget()) 
 	for val in dpc.scanStackForPtrsToType(
-			dpc.sbt.process.GetSelectedThread(),"SockObj"):
+			dpc.sbt.process.GetSelectedThread(),
+			["SockObj",  "JsObjImpl<SockObj,SockStreamObj>"]):
 		vec = val.GetChildMemberWithName("input").GetChildMemberWithName("data_")
 		print("vec addr %s" % (xx(vec.GetLoadAddress())))
 		page0Pos = dpc.readPtr(vec.GetLoadAddress())
@@ -1946,47 +2018,6 @@ def emplSpec0(debugger, command, result, internal_dict):
 		print("curl -b cookies-htgi-dmz.txt -c cookies-htgi-dmz.txt -vL\\")
 		print("http://htgi.dmz:9999/docs/text --data\\")
 		print("'%s'" % postData.decode())
-
-def __lldb_init_module(debugger, internal_dict):
-	"To load: command script import ~/stuff/crashtools.py"
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printType dt" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printTypeFromVbase dtv" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printTypeOutside pto" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printIcu icu" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
-		__name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.emplSpec0 e0" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printVmPos kp" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.watchVmPos wkp" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.startRefTracing tref" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.dumpRefTracing dref" % __name__)
-	debugger.HandleCommand(
-		"type summary add -F %s.summaryIcu KString" % __name__)
-	debugger.HandleCommand(
-		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
-	debugger.HandleCommand(
-		"type summary add -F %s.summaryVal Val" % __name__)
-	debugger.HandleCommand(
-		"type synthetic add Val --python-class %s.SyntheticVal" %
-		__name__)
-	if 0:
-		debugger.HandleCommand(
-			"type synthetic add FunStackInfo --python-class %s.SyntheticFsi" %
-			__name__)
-	debugger.HandleCommand(
-		"type synthetic add __VMvars --python-class %s.SyntheticVmv" %
-		__name__)
-	print("%s loaded" % __name__) 
 
 if __name__ == "__main__":
 	# This makes my Mac (standard LLDB package) segfault 
