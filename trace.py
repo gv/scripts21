@@ -89,9 +89,17 @@ parser.add_argument(
 #	"--nolib", action="store_true",
 #	help="Set BPs in main executable only")
 parser.add_argument("-v", "--verbose", action="store_true")
+parser.add_argument(
+	"--lldb", "-P", help="Path to lldb")
 parser.add_argument("FUNCTION", nargs="*")
 parser.add_argument("PID", nargs="?")
+args = parser.parse_args()
 
+if args.lldb:
+	dir = subprocess.check_output([args.lldb, "-P"]).strip().decode()
+	print("Adding '%s'..." % dir)
+	sys.path.append(dir)
+	
 try:
 	import lldb
 except ImportError:
@@ -165,6 +173,7 @@ class TracePoint(Util):
 		self.count = 0
 		self.debuggerBps = []
 		self.filters = []
+		self.filename, self.line = None, None
 
 	def getId(self):
 		if hasattr(self, "id"):
@@ -271,7 +280,6 @@ class NamedTracePoint(TracePoint):
 		self.commands = []
 		self.calls = None
 		self.stackEnabled = True
-		self.filename, self.line = None, None
 		parts = name.split("#")
 		if len(parts) > 1:
 			name = parts[0]
@@ -541,7 +549,7 @@ class SSLWriteTrace(TracePoint):
 		self.id = "W"
 		return self.id
 	
-	def getAddrs(self, target, process):
+	def getAddrs(self, target, process, check=False):
 		base = self.getFunc(self.symbolName, target)
 		if not base:
 			return []
@@ -560,7 +568,7 @@ class SSLReadTrace(TracePoint):
 		self.id = "R"
 		return self.id
 	
-	def getAddrs(self, target, process):
+	def getAddrs(self, target, process, check=False):
 		base = self.getFunc(self.symbolName, target)
 		if not base:
 			return []
@@ -587,7 +595,7 @@ class OpensslReadTrace(SSLReadTrace):
 		raise Exception("TODO")
 
 class OpensslWriteTrace(SSLWriteTrace):
-	def getAddrs(self, target, process):
+	def getAddrs(self, target, process, check=False):
 		self.symbolName = "SSL_write"
 		return []
 
@@ -602,7 +610,7 @@ class OpensslWriteTrace(SSLWriteTrace):
 			hexDumpMem(process, buf, buf + size, error)
 
 class MozillaWriteTrace(OpensslWriteTrace):
-	def getAddrs(self, target, process):
+	def getAddrs(self, target, process, check=False):
 		self.symbolName = "PR_Send"
 		return []
 
@@ -806,7 +814,7 @@ class Process(Util):
 				continue
 			if skipStart:
 				head = "%d-%d" % (skipStart.idx, f.idx)
-				skipStart = None
+				skipStart = sl = None
 			else:
 				head = "%d" % f.idx
 				sl = self.getSourceLine(f, " at %s:%d")
@@ -985,6 +993,7 @@ class Process(Util):
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
 				self.count.stopped += 1
+				tn = -1
 				for tn in range(self.process.GetNumThreads()):
 					t = self.process.GetThreadAtIndex(tn)
 					frame = t.GetFrameAtIndex(0)
@@ -1158,4 +1167,4 @@ class Tool:
 				q.inspect(int(m.group(2)))
 				q.unload()
 		
-Tool(parser.parse_args()).run()
+Tool(args).run()

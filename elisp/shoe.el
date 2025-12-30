@@ -717,7 +717,7 @@ and starts new compile. Alternatively, start new compile as
 (require 'compile)
 (add-to-list 'compilation-error-regexp-alist-alist
 ;; sub1 = file, sub2 = line, no column, type = warning
- '(asan " \\(/[^:\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
+ '(asan " \\([./][^:\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
 (add-to-list 'compilation-error-regexp-alist 'asan)
 ;; Same as asan but in parentheses
 (add-to-list 'compilation-error-regexp-alist-alist

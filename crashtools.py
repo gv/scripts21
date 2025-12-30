@@ -99,6 +99,8 @@ def __lldb_init_module(debugger, internal_dict):
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.telescope xt" % __name__)
 	debugger.HandleCommand(
+		"command script add --overwrite -f %s.printGtkTree pgt" % __name__)
+	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu KString" % __name__)
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
@@ -116,10 +118,12 @@ def __lldb_init_module(debugger, internal_dict):
 		__name__)
 	print("%s loaded" % __name__)
 
+
 def telescope(debugger, command, result, internal_dict):
 	cmdl = re.split(r"\s+", command)
 	if len(cmdl) > 2:
-		print("USAGE: xt")
+		print("USAGE: xt [START [END]]")
+		return
 	class NoArgs:
 		def __init__(self):
 			self.storage = None
@@ -131,6 +135,46 @@ def telescope(debugger, command, result, internal_dict):
 	stack = tg.printStackInfo(th)
 	end = len(cmdl) > 1 and unxx(cmdl[1]) or stack.GetRegionEnd()
 	tg.printPointers(start, end, stack)
+
+def find1Type(sbt, name):
+	if (nt := len(types := sbt.FindTypes(name))) != 1:
+		raise Exception("%d types '%s'" % (nt, name))
+	return types.GetTypeAtIndex(0)
+
+class GtkTree:
+	def __init__(self, sbt):
+		self.sbt = sbt
+		self.GtkRBTree = find1Type(sbt, "GtkRBTree")
+		self.GtkRBNode = find1Type(sbt, "GtkRBNode")
+		
+	def doPrintTree(self, pt, prefix):
+		print(" %s %s tree" % (xx(pt), prefix))
+		vt = self.sbt.CreateValueFromAddress(
+			"tree", lldb.SBAddress(pt, self.sbt), self.GtkRBTree)
+		vnp = vt.GetChildMemberWithName("root")
+		if vnp.GetValueAsUnsigned() == 0:
+			print(" (null root)")
+			return
+		self.doPrintNode(vnp, prefix)
+
+	def doPrintNode(self, vnp, prefix):
+		if vnp.GetValueAsUnsigned() == 0:
+			return
+		# vn = vnp.GetChildAtIndex(0)
+		print(" %s %s node" % (xx(vnp.GetValueAsUnsigned()), prefix))
+		pt = vnp.GetChildMemberWithName("children").GetValueAsUnsigned()
+		if pt:
+			self.doPrintTree(pt, prefix + " ")
+		left = vnp.GetChildMemberWithName("left")
+		self.doPrintNode(left, prefix)
+		self.doPrintNode(vnp.GetChildMemberWithName("right"), prefix)
+	
+def printGtkTree(debugger, command, result, internal_dict):
+	cmdl = re.split(r"\s+", command)
+	if len(cmdl) > 1:
+		print("USAGE: pgt [GtkRBTree*]")
+		return
+	GtkTree(debugger.GetSelectedTarget()).doPrintTree(unxx(cmdl[0]), "")
 
 try:
 	import lldb

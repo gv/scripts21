@@ -11,7 +11,7 @@ platform = $(shell uname -s)
 B = $(platform:Darwin=build)$(cf)$(vgccversion)
 tools0 = $(platform:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
 tools = $(tools0:Linux=)
-cflags = $(cf:-a=-fsanitize=address)
+cflags_global = $(cf:-a=-fsanitize=address)
 
 # ---------- project specific options ----------
 
@@ -121,8 +121,8 @@ zsh%: options = --with-tcsetpgrp
 	--with-jpeg=no --with-gif=no
 
 # If I use PKG_CONFIG_LIBDIR system packages are not found
-%network-manager-applet %nma1: options = -Dwwan=false -Dteam=false
-%network-manager-applet %nma1 %xfce4-panel %thunar %thunar0 %thunar1:\
+network-manager-applet% nma1%: options = -Dwwan=false -Dteam=false
+network-manager-applet% nma1% xfce4-panel% thunar% :\
 	envvars =\
 	PKG_CONFIG_PATH=$R/lib64/pkgconfig:$R/lib/x86_64-linux-gnu/pkgconfig
 libnma%: options = -Dgcr=false -Dintrospection=false -Dvapi=false
@@ -138,7 +138,7 @@ _cmake.options=-DCMAKE_USE_OPENSSL=OFF
 
 xfce4-panel.n: libxfce4ui.m
 
-%bluez: options = --enable-obex --disable-client --disable-mesh
+bluez%: options = --enable-obex --disable-client --disable-mesh
 
 libass.n: harfbuzz.m fribidi.m freetype2.m
 freetype2.m: bzip2.m zlib.m
@@ -157,10 +157,7 @@ noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
 # qemu must skip meson.build
 qemu8.n_: qemu8.m_
 qemu%.n_: qemu%.m_
-glib.m: pcre-8.45.m
 aqemu.make: pkg-config.install_ glib.install_ pixman.install_
-
-glib.m: pcre-8.45.m
 
 lldb.Darwin.deps = swig.m libedit.m
 lldb.n: $(lldb.$(platform).deps) clang.m
@@ -176,8 +173,10 @@ heaptrack.apt:
 		libboost-system-dev libboost-filesystem-dev
 %heaptrack: options = -Wno-dev
 
-thunar.n: libxfce4ui.m
-thunar%: options = -Wvte=true
+thunar.n thunar1.n: libxfce4ui.m
+thunar1.n: gtk.m
+thunar%: options = -Dterminal=enabled
+thunar1%: cflags = -Werror -fsanitize=address
 vte%: options = -Dgnutls=false -Dvapi=false
 
 
@@ -311,15 +310,15 @@ $f $(lldb.t):
 	echo Force=$f
 
 noinstall.% %.noinstall %.n:
-	$(MAKE) _build.$*
+	$(MAKE) $*.build_
 
-_build.% %.n_: $R/%.waf.successful.log.txt $(AFSCTOOL) $f
+%.build_ %.n_: $R/%.waf.successful.log.txt $(AFSCTOOL) $f
 	$(COMPRESS_AND) echo $^ is up to date	
 
-_build.% %.n_: $O/$B.%/%.ninja.success.logc $(AFSCTOOL) $f
+%.build_ %.n_: $O/$B.%/%.ninja.success.logc $(AFSCTOOL) $f
 	$(COMPRESS_AND) echo $^ is up to date	
 
-_build.% %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
+%.build_ %.n_ %.m_: $R/%.make.successful.log.txt $(AFSCTOOL) $f
 	$(COMPRESS_AND) echo $^ is up to date	
 
 %.m:
@@ -345,8 +344,8 @@ $R/%.installed.logc: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 		CMAKE_INSTALL_MODE=SYMLINK ninja install) 2>&1 | tee $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
-$R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST)
-	mkdir -p $(dir $@)g
+$R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST) $f
+	mkdir -p $(dir $@)
 	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 install) 2>&1 | tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
@@ -400,7 +399,8 @@ $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)\
 # TODO Change in $(options) doesn't work now
 	test -f $@ ||\
 		$($*.envvars) $(envvars)\
-		PATH=$(tools)$(PATH) CFLAGS="-I$R/include $(cflags)" python3\
+		PATH=$(tools)$(PATH)\
+		CFLAGS="-I$R/include $(cflags_global) $(cflags)" python3\
 		$S/meson/meson.py setup\
 		--prefix="$R" $($*.options) $(options) $O/$B.$* $S/$* 2>&1|\
 		tee $O/$B.$*/meson_.log
