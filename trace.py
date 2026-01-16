@@ -44,10 +44,6 @@ Disadvantages re. bcc:
  Very slow
  lldb on Linux is buggy
 
-Bugs:
- Call stack is printed with most immediate function at the bottom, 
- instead of at the top like debuggers do...
-
 """
 from __future__ import print_function
 import argparse, re, sys, os, subprocess, json, fnmatch, struct
@@ -82,7 +78,7 @@ parser.add_argument(
 parser.add_argument(
 	"--python", "-p", action="store_true", help="Only python commands")
 parser.add_argument(
-	"--slen", "-s", help="Stack limit")
+	"--slen_disabled", "-s", help="Stack limit")
 parser.add_argument(
 	"--wait", "-w", action="store_true", help="Wait if process doesn't exist")
 #parser.add_argument(
@@ -169,7 +165,7 @@ class TracePoint(Util):
 	instancesById = {}
 
 	def __init__(self, options=None):
-		self.options = options
+		self.args = options
 		self.count = 0
 		self.debuggerBps = []
 		self.filters = []
@@ -488,16 +484,17 @@ size=64 name=icu_66::UnicodeString
 			for cmd in self.commands:
 				c2 = self.substCommand(frame, cmd)
 				stackSize = ""
-				if 1 or toolProc.options.slen == 0:
+				if 1 or toolProc.args.slen == 0:
 					stackSize = "\u2193%d" % (
 						frame.thread.GetNumFrames())
 				toolProc.write("%s%d%s %s= " % (
 					self.id, self.count, stackSize,
 					rightLimited(c2, 40)))
-				if toolProc.options.python or re.match(".*([(]|[+]=)", c2):
+				if toolProc.args.python or re.match(".*([(]|[+]=)", c2):
 					r = self.runScript(frame, c2)
 					toolProc.print(repr(r))
 				else:
+					toolProc.print(c2)
 					toolProc.debugger.HandleCommand(c2)
 					toolProc.writeToLog("TODO Copy command output here\n")
 		else:
@@ -603,7 +600,7 @@ class OpensslWriteTrace(SSLWriteTrace):
 		buf = frame.reg["rsi"].GetValueAsUnsigned() # arg 2
 		size = frame.reg["rdx"].GetValueAsUnsigned() # arg 3
 		print("write %d bytes:" % size)
-		if self.options.sslt:
+		if self.args.sslt:
 			bt = check(error, process.ReadMemory(buf, size, error))
 			print(bt.decode("utf-8"))
 		else:
@@ -688,6 +685,14 @@ class Count:
 		self.stopped = 0
 		self.bpLocations = 0
 
+def getCommonPrefixLen(stack1, stack2):
+	if len(stack1) > len(stack2):
+		stack1, stack2 = stack2, stack1
+	for i, fr in enumerate(stack1):
+		if stack2[i].addr != fr.addr:
+			return i
+	return len(stack1)
+		
 class Process(Util):
 	objects = {}
 
@@ -697,24 +702,25 @@ class Process(Util):
 			raise Exception("Bad log %s" % category)
 	
 	def __init__(self, options):
-		self.options = options
+		self.args = options
 		self.debugger = lldb.SBDebugger.Create()
 		self.error = lldb.SBError()
 		self.breakpoints = {}
-		self.lastPrintedStack = []
+		self.lastPrintedStackReversed = []
 		self.stacksEnabled = True
 		self.printImage = False
 		self.count = Count()
-		if self.options.verbose:
+		if self.args.verbose:
 			self.enableLog(
-					"lldb", ["dyld", "target", "zzzz"])
-			self.enableLog( "gdb-remote", ["packets"])
+					"lldb", [#"dyld", "target", "zzzz",
+						"process"])
+			# self.enableLog( "gdb-remote", ["packets"])
 		self.tasksBySp = {}
 		self.fltMap = {}
 		self.filterNames = set()
 		self.output = None
-		if self.options.output:
-			self.output = open(self.options.output, "w")
+		if self.args.output:
+			self.output = open(self.args.output, "w")
 			self.output.write(" -*- mode: compilation -*-\n")
 
 	def write(self, msg):
@@ -739,16 +745,24 @@ class Process(Util):
 		self.launch = launch
 		self.target = self.check(self.debugger.CreateTarget(
 			launch and launch[0] or "", "", "", True, self.error))
-		print(launch)
 		if launch:
 			sys.stderr.write("Launching %s..." % launch)
-			self.process = self.check(self.target.Launch(
-				self.debugger.GetListener(),
-				launch[1:],
-				None, None, # env stdin
-				# TODO Don't see output anyway
-				"/dev/stderr", "/dev/stderr", os.getcwd(),
-				0, True, self.error))
+			pli = self.target.GetLaunchInfo()
+			if self.args.output:
+				pli.AddOpenFileAction(1, self.args.output, False, True)
+				pli.AddOpenFileAction(2, self.args.output, False, True)
+			# Redirects to /dev/stderr etc. will not work on Linux because
+			# the target process is run through "gdb-remote" plugin under
+			# another lldb-server subprocess which does have fds 0 1 2 set to
+			# /dev/null
+			else:
+				for fd in [1,2]:
+					pli.AddOpenFileAction(
+						fd, "/proc/%d/fd/%d" % (os.getpid(), fd), False, True)
+			pli.SetArguments(launch[1:], False)
+			pli.SetListener(self.debugger.GetListener())
+			pli.SetLaunchFlags(lldb.eLaunchFlagStopAtEntry)
+			self.process = self.check(self.target.Launch(pli, self.error))
 		elif re.match(r"\d+", pid):
 			ai = lldb.SBAttachInfo(int(pid))
 			sys.stderr.write(
@@ -758,7 +772,7 @@ class Process(Util):
 				self.debugger.GetListener(),
 				pid, "gdb-remote", self.error))
 		if 0:
-			ai = lldb.SBAttachInfo(pid, self.options.wait)
+			ai = lldb.SBAttachInfo(pid, self.args.wait)
 			sys.stderr.write("Attaching name='%s'..." % pid)
 		if not hasattr(self, "process") and not launch:
 			self.process = self.check(self.target.Attach(
@@ -781,8 +795,10 @@ class Process(Util):
 		if self.launch:
 			print("Killing %s %s..." % (
 				self.launch, self.process.GetProcessID()))
-			r = os.kill(self.process.GetProcessID(), 9)
-			print("r=%s" % r)
+			try:
+				r = os.kill(self.process.GetProcessID(), 9)
+				print("r=%s" % r)
+			except ProcessLookupError: pass
 		sys.stderr.write("Detaching %s..." % self.process)
 		self.error = self.process.Detach()
 		if not self.error.success:
@@ -796,44 +812,33 @@ class Process(Util):
 	def printStack(self, frame):
 		if not self.stacksEnabled:
 			return
-		skipStart = None
-		if self.options.slen is not None:
-			start = max(
-				frame.thread.GetNumFrames() - int(self.options.slen), 0)
-		else:
-			start = 0
-		for i in range(start, frame.thread.GetNumFrames()):
-			idx = frame.thread.GetNumFrames() - i - 1
+		size = frame.thread.GetNumFrames()
+		# The deepest frames have max numbers
+		commonSuffixLen = getCommonPrefixLen(
+			frame.thread.frames[::-1], self.lastPrintedStackReversed)
+		for idx in range(size - commonSuffixLen):
 			f = frame.thread.frames[idx]
-			if i + 1 < len(self.lastPrintedStack) and\
-			   f.addr == self.lastPrintedStack[i].addr and\
-			   idx > 0 and\
-			   frame.thread.frames[idx - 1].addr ==\
-			   self.lastPrintedStack[i + 1].addr:
-				skipStart = skipStart or f
-				continue
-			if skipStart:
-				head = "%d-%d" % (skipStart.idx, f.idx)
-				skipStart = sl = None
-			else:
-				head = "%d" % f.idx
-				sl = self.getSourceLine(f, " at %s:%d")
-				name = f.addr.symbol.name
-			if sl and name:
+			head = "%d" % f.idx
+			sl = self.getSourceLine(f, " at %s:%d")
+			name = f.addr.symbol.name
+			if 1 or sl and name:
 				name = name.split("(")[0]
 				sys.stderr.write("\r")
 				self.print("%7s %16x %s%s" % (
 					head, f.addr.GetLoadAddress(self.target),
 					self.printImage and (f.module.file.basename + " ") or "",
 					name) + sl)
-				self.lastPrintedStack = frame.thread.frames[::-1]
+		if commonSuffixLen:
+			self.print("Repeated frames %d-%d skipped" % (
+				size - commonSuffixLen, size - 1))
+		self.lastPrintedStackReversed = frame.thread.frames[::-1]
 
 	def getSourceLine(self, f, template):
 		if not f.line_entry.IsValid() or not f.line_entry.file.fullpath:
 			return ""
 		cwd = (
-			self.options.output and
-			os.path.dirname(self.options.output) or
+			self.args.output and
+			os.path.dirname(self.args.output) or
 			os.getcwd()).split(os.sep)[-1]
 		parts = f.line_entry.file.fullpath.split(os.sep)
 		try:
@@ -861,9 +866,9 @@ class Process(Util):
 	def traceSsl(self):
 		self.setBpIfExists(SSLReadTrace())
 		self.setBpIfExists(SSLWriteTrace())
-		self.setBpIfExists(OpensslWriteTrace(self.options))
-		self.setBpIfExists(MozillaWriteTrace(self.options))
-		if self.count.bpLocations == 0 and not self.options.deferred:
+		self.setBpIfExists(OpensslWriteTrace(self.args))
+		self.setBpIfExists(MozillaWriteTrace(self.args))
+		if self.count.bpLocations == 0 and not self.args.deferred:
 			raise Exception("No SSL functions found")
 		self.runTrace()
 
@@ -1069,18 +1074,18 @@ class Process(Util):
 
 class Tool:
 	def __init__(self, options):
-		self.options = options
+		self.args = options
 
 	def run(self):
-		if self.options.sslt:
-			self.options.ssl = True
-		if self.options.tid:
-			tid = int(self.options.tid)
-		if self.options.with_dtrace:
+		if self.args.sslt:
+			self.args.ssl = True
+		if self.args.tid:
+			tid = int(self.args.tid)
+		if self.args.with_dtrace:
 			return self.collectProcesses()
-		pid = self.options.PID
-		functions = self.options.FUNCTION
-		launch = self.options.launch and self.options.launch.split(" ")
+		pid = self.args.PID
+		functions = self.args.FUNCTION
+		launch = self.args.launch and self.args.launch.split(" ")
 		if "@@" in functions:
 			i = functions.index("@@")
 			launch = functions[:i]
@@ -1095,19 +1100,19 @@ class Tool:
 		if not (pid or launch):
 			sys.stderr.write("Need PID or command\n")
 			sys.exit(1)
-		process = Process(self.options).load(pid, launch)
+		process = Process(self.args).load(pid, launch)
 		try:
-			if self.options.tid:
+			if self.args.tid:
 				try:
 					process.inspect(tid)
 				except Exception:
 					print("exception in inspect: %s" % sys.exc_info()[1])
 					self.traceAll(process, functions)
-			elif self.options.list:
+			elif self.args.list:
 				process.listSymbols(False)
-			elif self.options.list2:
+			elif self.args.list2:
 				process.listSymbols(True)
-			elif self.options.modules:
+			elif self.args.modules:
 				process.listModules()
 			else:
 				self.traceAll(process, functions)
@@ -1116,7 +1121,7 @@ class Tool:
 			process.unload()
 
 	def traceAll(self, process, functions):
-		if self.options.ssl:
+		if self.args.ssl:
 			return process.traceSsl()
 		idChar = "a"
 		for expr in functions:
@@ -1144,7 +1149,7 @@ class Tool:
 								process.setBp(p2)
 				else:
 					process.setBp(point)
-		if self.options.events:
+		if self.args.events:
 			process.setHandleEventBreakpoints()
 		process.runTrace()
 
@@ -1152,7 +1157,7 @@ class Tool:
 		command = [
 			"sudo", # "-S",
 			os.path.join(os.path.dirname(__file__), "collecttcp.d"),
-			"-DPRINT=1", "-DSTOP=\"%s\"" % self.options.with_dtrace]
+			"-DPRINT=1", "-DSTOP=\"%s\"" % self.args.with_dtrace]
 		print("Running %s..." % json.dumps(" ".join(command)))
 		p = subprocess.Popen(
 			command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -1163,7 +1168,7 @@ class Tool:
 			sys.stderr.write("dtrace: %s" % line)
 			m = re.match(r"thread (\d+) (\d+)", line)
 			if m:
-				q = Process(self.options).load(m.group(1))
+				q = Process(self.args).load(m.group(1))
 				q.inspect(int(m.group(2)))
 				q.unload()
 		

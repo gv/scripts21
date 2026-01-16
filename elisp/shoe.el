@@ -163,6 +163,8 @@
 (define-key global-map [M-next] 'ft-at-point)
 (define-key global-map [M-prior] 'pop-tag-mark)
 (define-key global-map [C-insert] 'Vg-copy)
+(define-key global-map (kbd "s-c") 'Vg-copy)
+(define-key global-map (kbd "s-v") 'cua-paste)
 ;; End of code navigation
 
 (define-key global-map [f1] 'man)
@@ -738,9 +740,12 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'compilation-error-regexp-alist-alist
  '(meson-install "^Installing \\(/[^ ]+\\)" 1 nil nil 1))
 (add-to-list 'compilation-error-regexp-alist 'meson-install)
- 
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(valgrind "(\\(.+\\):\\([0-9]+\\))$" 1 2 nil 1))
+
 (setq compilation-error-regexp-alist
- '(cmake1 make asan gnu python-tracebacks-and-caml meson-install bash)) 
+ '(cmake1 make asan gnu python-tracebacks-and-caml meson-install bash
+   valgrind)) 
 
 (defun Vg-get-local-search-command (query)
  ;; Need an interface for Spotlight search because the Finder one is no good.
@@ -804,7 +809,7 @@ and starts new compile. Alternatively, start new compile as
  (let ((url (format template (url-hexify-string query))))
   (insert (format "[%s] %s\n" key url))
   (define-key compilation-mode-map key
-   (lambda () (interactive) (vg-open url)))))
+   (lambda () (interactive) (Vg-open-browser url)))))
 
 (defun vg-local-search () (interactive)
  (Vg-start-local-search

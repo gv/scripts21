@@ -62,7 +62,8 @@ llvm_common.options =\
 	-D CMAKE_CXX_FLAGS_RELWITHDEBINFO='-Os -g -DNDEBUG'\
 	-D LLVM_TARGETS_TO_BUILD=X86\
 	-D LLDB_ENABLE_LIBEDIT=1\
-	-D BUILD_SHARED_LIBS=1
+	-D BUILD_SHARED_LIBS=1\
+	-D LLVM_ENABLE_ASSERTIONS=1
 llvm.options = $(llvm_common.options) -D LLVM_INCLUDE_TESTS=1\
 	-D LLVM_INSTALL_GTEST=1\
 	-D CMAKE_BUILD_WITH_INSTALL_RPATH=1
@@ -179,6 +180,19 @@ thunar%: options = -Dterminal=enabled
 thunar1%: cflags = -Werror -fsanitize=address
 vte%: options = -Dgnutls=false -Dvapi=false
 
+thunar-new.n: libxfce4ui-new.m
+thunar-new.n: envvars = CC=clang
+libxfce4ui-new.m: gtk-new.m
+gtk-new.m: glib-new.m gvfs-new.m
+gtk-new.options = -Dwayland-backend=false -Dmedia-gstreamer=disabled\
+	-Dvulkan=disabled -Dbuild-tests=false
+gvfs-new.m: glib-new.m
+gvfs-new.options = -Dtmpfilesdir=no -Dsystemduserunitdir=no -Dgcr=false\
+	-Dadmin=false -Dhttp=false -Ddnssd=false -Dgudev=false -Dfuse=false\
+	-Dudisks2=false -Dlogind=false -Dafc=false -Dgoa=false -Dkeyring=false\
+	-Dbluray=false -Dlibusb=false -Dsmb=false -Darchive=false -Dcdda=false\
+	-Dgoogle=false -Donedrive=false -Dgphoto2=false -Dmtp=false\
+	-Dafp=false -Dnfs=false -Dsftp=false -Dwsdd=false -Dburn=false
 
 T = samba/source3
 
@@ -322,7 +336,7 @@ noinstall.% %.noinstall %.n:
 	$(COMPRESS_AND) echo $^ is up to date	
 
 %.m:
-	$(MAKE) $*.install_
+	$(MAKE) $*.install_ "envvars=$(envvars)"
 
 %.install_: $R/%.installed.logc $(AFSCTOOL) $f
 	$(COMPRESS_R_AND) echo $^ is up to date	
@@ -392,7 +406,7 @@ $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)\
 		$f
-	pkg-config --list-all
+#	pkg-config --list-all
 	mkdir -p $O/$B.$*
 # If build files are present --reconfigure is mandatory, but it's an
 # error to pass that when there are none.
@@ -446,7 +460,7 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 	cd $(dir $@) && autoheader -v && aclocal --verbose && autoconf -v
 
 clean:
-	rm -rfv $O/$B.elfutils $R
+	rm -rfv $O/$B.* $R
 
 13:
 	scl enable gcc-toolset-13 -- $(MAKE) $t vgccversion=$@
