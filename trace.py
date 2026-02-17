@@ -66,6 +66,8 @@ parser.add_argument(
 parser.add_argument(
 	"-T", "--sslt", action="store_true", help="Trace SSL, show as text")
 parser.add_argument(
+	"-G", "--glib", action="store_true", help="TODO")
+parser.add_argument(
 	"-D", "--deferred", action="store_true",
 	help="Don't terminate if bp addresses not found (lldb BPs are deferred at least on Linux")
 parser.add_argument(
@@ -478,7 +480,7 @@ size=64 name=icu_66::UnicodeString
 	def trace2(self, frame, toolProc):
 		self.count += 1
 		if self.stackEnabled:
-			toolProc.printStack(frame)
+			toolProc.printStack(frame.thread)
 		if self.commands:
 			toolProc.process.SetSelectedThread(frame.thread)
 			for cmd in self.commands:
@@ -561,6 +563,7 @@ class SSLWriteTrace(TracePoint):
 
 class SSLReadTrace(TracePoint):
 	def getId(self):
+		# TODO move to class
 		self.symbolName = "SSLRead"
 		self.id = "R"
 		return self.id
@@ -611,6 +614,104 @@ class MozillaWriteTrace(OpensslWriteTrace):
 		self.symbolName = "PR_Send"
 		return []
 
+def xx(n):
+	n = "%X" % n
+	return ",".join(re.findall(r"[0-9a-fA-F]{1,4}", n[::-1]))[::-1]
+
+def describeImagePtr(pa):
+	desc = "No image"
+	if pa.function.IsValid():
+		off = pa.offset - pa.function.addr.offset
+		desc = "%s+%d" % ( pa.function.name, off)
+	elif pa.symbol.IsValid():
+		off = pa.offset - pa.symbol.addr.offset
+		desc = "%s+%d" % ( pa.symbol.name, off)
+	elif pa.section.IsValid():
+		desc = "%s%s+%s" % (
+			pa.module.GetFileSpec().basename, pa.section.name, xx(pa.offset))
+	elif pa.module.IsValid():
+		desc = pa.module.name
+	return desc
+
+def getSize(s):
+	return s.GetEndAddress().GetOffset() -\
+		s.GetStartAddress().GetOffset()
+
+class Continuation(Util):
+	"This object is saved when user schedules a callback"
+	def __init__(self, thread, cb, params, toolProc):
+		self.frames = list(thread.frames)
+		self.cb = cb
+		self.params = params
+		self.stackWords = self.getStackWords(thread)
+		self.regs = self.getRegs(thread)
+		cba = toolProc.target.ResolveLoadAddress(self.cb)
+		if not cba.symbol.IsValid():
+			raise Exception("cb=%s not a function" % self.cb)
+		self.endCb = self.cb + getSize(cba.symbol)
+		if not self.getId in toolProc.continuations:
+			print("Add continuation cb=%s cba=%s params=%s" % (
+				xx(self.cb), describeImagePtr(cba),
+				",".join(xx(p) for p in self.params)))
+		toolProc.continuations[self.getId()] = self
+
+	def getId(self):
+		return str([self.cb] + self.params)
+			
+	def getStackWords(self, thread):
+		if hasattr(thread, "stackWords"):
+			return thread.stackWords
+		reg = lldb.SBMemoryRegionInfo()
+		self.error = thread.process.GetMemoryRegionInfo(
+			thread.frames[0].sp, reg)
+		self.check(None)
+		return [
+			self.check(thread.process.ReadPointerFromMemory(pp, self.error))
+			for pp in range(thread.frames[0].sp, reg.GetRegionEnd(), psize)]
+
+	def getRegs(self, thread):
+		if hasattr(thread, "regs"):
+			return thread.regs
+		return [v.GetValueAsUnsigned() for v in
+				 thread.frames[0].regs["General Purpose Registers"][0]]
+		
+	def GetNumFrames(self):
+		return len(self.frames)
+
+	def leadsTo(self, other):
+		needles = [self.cb] + self.params
+		for word in self.getStackWords(other) + self.getRegs(other):
+			if word >= self.cb and word < self.endCb:
+				word = self.cb
+			try:
+				needles.remove(word)
+				if not needles:
+					return True
+			except ValueError: pass
+		return False
+	
+class GfileQueryInfoAsync(TracePoint):
+	symbolName = "g_file_query_info_async"
+	def getAddrs(self, target, process, check=False):
+		return []
+
+	def trace2(self, frame, toolProc):
+		self.error = lldb.SBError()
+		cb = frame.reg["r9"].GetValueAsUnsigned() # arg 6
+		data = self.check(frame.thread.process.ReadPointerFromMemory(
+			frame.sp + psize, self.error)) # arg 7
+		Continuation(frame.thread, cb, [data], toolProc)
+
+class MainBreakpoint(TracePoint):
+	"This is where we have all dynamic libs loaded"
+	symbolName = "main"
+	def getAddrs(self, target, process, check=False):
+		return []
+
+	def trace2(self, frame, toolProc):
+		if toolProc.args.glib:
+			toolProc.setBp(GfileQueryInfoAsync())
+			
 class NSEvent(Util):
 	types = dict(
 		NSEventTypeLeftMouseDown			 = 1,
@@ -718,6 +819,7 @@ class Process(Util):
 		self.tasksBySp = {}
 		self.fltMap = {}
 		self.filterNames = set()
+		self.continuations = {}
 		self.output = None
 		if self.args.output:
 			self.output = open(self.args.output, "w")
@@ -809,20 +911,20 @@ class Process(Util):
 		self.debugger.DeleteTarget(self.target)
 		sys.stderr.write("Done\n")
 
-	def printStack(self, frame):
+	def printStack(self, thread, printed=[]):
 		if not self.stacksEnabled:
 			return
-		size = frame.thread.GetNumFrames()
+		size = thread.GetNumFrames()
 		# The deepest frames have max numbers
 		commonSuffixLen = getCommonPrefixLen(
-			frame.thread.frames[::-1], self.lastPrintedStackReversed)
+			thread.frames[::-1], self.lastPrintedStackReversed)
 		for idx in range(size - commonSuffixLen):
-			f = frame.thread.frames[idx]
-			head = "%d" % f.idx
+			f = thread.frames[idx]
+			head = "%d" % idx
 			sl = self.getSourceLine(f, " at %s:%d")
 			name = f.addr.symbol.name
 			if 1 or sl and name:
-				name = name.split("(")[0]
+				name = (name or "").split("(")[0]
 				sys.stderr.write("\r")
 				self.print("%7s %16x %s%s" % (
 					head, f.addr.GetLoadAddress(self.target),
@@ -831,8 +933,22 @@ class Process(Util):
 		if commonSuffixLen:
 			self.print("Repeated frames %d-%d skipped" % (
 				size - commonSuffixLen, size - 1))
-		self.lastPrintedStackReversed = frame.thread.frames[::-1]
+		self.lastPrintedStackReversed = thread.frames[::-1]
+		if self.args.glib:
+			matchedUnprinted = []
+			matchedCount = 0
+			for cn in self.continuations.values():
+				if cn.leadsTo(thread):
+					matchedCount += 1
+					if not cn in printed:
+						matchedUnprinted.append(cn)
+			print("Matched %s of %s saved callbacks (%s printed already)" % (
+				matchedCount, len(self.continuations),
+				(matchedCount - len(matchedUnprinted))))
+			if matchedUnprinted:
+				self.printStack(matchedUnprinted[0], printed + [thread])
 
+					
 	def getSourceLine(self, f, template):
 		if not f.line_entry.IsValid() or not f.line_entry.file.fullpath:
 			return ""
@@ -859,7 +975,7 @@ class Process(Util):
 			if hasattr(tr, "trace2"):
 				tr.trace2(frame, self)
 			else:
-				self.printStack(frame)
+				self.printStack(frame.thread)
 				tr.trace(frame, self.process, self.error)
 		return True
 
@@ -871,6 +987,9 @@ class Process(Util):
 		if self.count.bpLocations == 0 and not self.args.deferred:
 			raise Exception("No SSL functions found")
 		self.runTrace()
+
+	def startTraceGlib(self):
+		self.setBp(MainBreakpoint())
 
 	def updateBreakpoints(self):
 		activeFilters = []
@@ -1123,6 +1242,8 @@ class Tool:
 	def traceAll(self, process, functions):
 		if self.args.ssl:
 			return process.traceSsl()
+		if self.args.glib:
+			process.startTraceGlib()
 		idChar = "a"
 		for expr in functions:
 			if expr.endswith(".dylib"):
