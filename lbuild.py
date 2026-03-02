@@ -7,6 +7,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
 	"--cflags", "-f", help="Compiler flags joined by '/'")
 parser.add_argument(
+	"--ldflags", "-l", help="Linker flags joined by '/'")
+parser.add_argument(
 	"--command", "-c", action="store_true", help="Run command")
 parser.add_argument(
 	"--docker", "-d", action="store_true",
@@ -194,16 +196,20 @@ class Build:
 				os.path.dirname(self.getGit()),
 				self.env["PATH"]])
 		self.pconf = conf.get(self.platform, {})
-		self.flagList = None
-		if self.args.cflags:
-			self.flagList = re.split("/+", self.args.cflags)
+		self.flagList = self.args.cflags and re.split("/+", self.args.cflags)
+		self.ldFlags = self.args.ldflags and re.split("/+", self.args.ldflags) or []
+		if not "-v" in self.ldFlags:
+			self.ldFlags.append("-v")
 		self.paths = Paths(self, base, self.args)
 		self.saved = Count("saved")
 
 	def getFlagSuffix(self):
-		if not self.flagList:
+		flags = []
+		for fg in self.flagList + self.ldFlags:
+			fg in flags or (fg == "-v") or flags.append(fg) 
+		if not flags:
 			return ""
-		suffix = "".join(self.flagList)
+		suffix = "".join(flags)
 		return suffix.startswith("-") and suffix or ("." + suffix)
 
 	def run(self):
@@ -311,20 +317,23 @@ class Build:
 			if hasattr(cmd, "split"):
 				cmd = cmd.split(" ")
 			cmd = sum([self.expand(a) for a in cmd], [])
-			if "cmake" == cmd[0] and "--build" != cmd[1] and self.flagList:
-				flags = self.flagList
-				if not flags[0].startswith("-"):
-					compiler2 = flags[0].replace("gcc", "g++")
-					if compiler2 == flags[0]:
-						compiler2 = flags[0] + "++"
-					cmd += [
-						"-DCMAKE_C_COMPILER=%s" % flags[0],
-						"-DCMAKE_CXX_COMPILER=%s" % compiler2]
-					flags = flags[1:]
-				if flags:
-					cmd += [
-						"-DCMAKE_CXX_FLAGS=%s" % " ".join(flags),
-						"-DCMAKE_C_FLAGS=%s" % " ".join(flags)]
+			if "cmake" == cmd[0] and "--build" != cmd[1]:
+				if self.flagList:
+					flags = self.flagList
+					if not flags[0].startswith("-"):
+						compiler2 = flags[0].replace("gcc", "g++")
+						if compiler2 == flags[0]:
+							compiler2 = flags[0] + "++"
+						cmd += [
+							"-DCMAKE_C_COMPILER=%s" % flags[0],
+							"-DCMAKE_CXX_COMPILER=%s" % compiler2]
+						flags = flags[1:]
+					if flags:
+						cmd += [
+							"-DCMAKE_CXX_FLAGS=%s" % " ".join(flags),
+							"-DCMAKE_C_FLAGS=%s" % " ".join(flags)]
+				if self.ldFlags:
+					cmd += ["-DCMAKE_EXE_LINKER_FLAGS=" + " ".join(flags)]
 			prefix = self.getConf("cmdPrefix")
 			if prefix:
 				self.bl.prefix = "nice ionice -n7".split(" ") + prefix

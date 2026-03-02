@@ -12,7 +12,7 @@ def run(args):
     outPath = os.path.basename(path) + ".contents"
     bytes.total = os.stat(path).st_size
     f = open(path, "rb")
-    text = f.read(4*1024).decode("utf-8")
+    text = f.read(4*1024).decode("utf-8", errors="ignore")
     m = re.search(r"filesizes=\"(\d+)\"", text)
     if not m:
         raise Exception("filesize not found")
