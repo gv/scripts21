@@ -625,6 +625,14 @@ class Target(Util):
 
 	def matchDebugInfoFile(self, mod, path):
 		self.runDebuggerCommand("target symbols add %s" % path)
+		if not mod:
+			for m2 in self.sbt.modules:
+				if os.path.realpath(m2.GetSymbolFileSpec().fullpath) ==\
+					 os.path.realpath(path):
+					mod = m2
+					break
+		if not mod:
+			raise DebuggerError("Symbol file '%s' does not match to any module")
 		if os.path.realpath(mod.GetSymbolFileSpec().fullpath) !=\
 			 os.path.realpath(path):
 			raise DebuggerError(
@@ -638,19 +646,19 @@ class Target(Util):
 
 	def search(self, paths):
 		search = self.args.search
-		matchingModsWithoutOrWithSyms = [[],[]]
-		for m in self.sbt.modules:
-			bn = m.GetFileSpec().basename
-			if search == bn or search.split(".")[0] == bn.split(".")[0]:
-				matchingModsWithoutOrWithSyms[m.GetSymbolFileSpec().IsValid()].append(m)
-		self.verb("Matching=%s\n" % (matchingModsWithoutOrWithSyms))
-		if not matchingModsWithoutOrWithSyms[False]:
-			if matchingModsWithoutOrWithSyms[True]:
-				raise Exception(
-					"Modules '%s' already has matching symbols" % (
-						matchingModsWithoutOrWithSyms[True]))
+		if search:
+			matchingModsWithoutOrWithSyms = [[],[]]
+			for m in self.sbt.modules:
+				bn = m.GetFileSpec().basename
+				if search == bn or search.split(".")[0] == bn.split(".")[0]:
+					matchingModsWithoutOrWithSyms[m.GetSymbolFileSpec().IsValid()].append(m)
+			self.verb("Matching=%s\n" % (matchingModsWithoutOrWithSyms))
+			if not matchingModsWithoutOrWithSyms[False]:
+				if matchingModsWithoutOrWithSyms[True]:
+					raise Exception(
+						"Modules '%s' already has matching symbols" % (
+							matchingModsWithoutOrWithSyms[True]))
 			raise Exception("No module matching '*/%s'" % self.args.search)
-		symNames = [search, search.split(".")[0] + ".pdb"]
 		cnt = WorkCount(len(paths))
 		for i, path in enumerate(paths):
 			cnt.done = i
@@ -665,26 +673,24 @@ class Target(Util):
 				for name in zf.namelist():
 					self.print("In '%s' found '%s'\n" % (path, name))
 					bn = os.path.basename(name)
-					if bn in symNames:
-						dbin = name
-						break
-				if not dbin:
-					continue
-				self.print("Extracting '%s'..." % dbin, cnt)
-				fp = os.path.join(tmpDir, bn)
-				open(fp, "wb").write(zf.read(dbin))
-				try:
-					self.matchDebugInfoFile(matchingModsWithoutOrWithSyms[0][0], fp)
-				except DebuggerError as e:
-					self.print("%s. Removing '%s'..." % (e, fp), cnt)
-					os.unlink(fp)
-					continue
-				# Good file
-				np = os.path.join(self.storagePath, os.path.basename(fp))
-				print("Moving '%s' to '%s'" % (fp, np))
-				os.rename(fp, np)
-				return 0
-		print("No symbol files found. Names = %s" % (symNames))
+					if not (bn == search or bn.endswith(".pdb")):
+						continue
+					self.print("Extracting '%s'..." % bn, cnt)
+					fp = os.path.join(tmpDir, bn)
+					open(fp, "wb").write(zf.read(name))
+					try:
+						self.matchDebugInfoFile(
+							search and matchingModsWithoutOrWithSyms[0][0], fp)
+					except DebuggerError as e:
+						self.print("%s. Removing '%s'..." % (e, fp), cnt)
+						os.unlink(fp)
+						continue
+					# Good file
+					np = os.path.join(self.storagePath, os.path.basename(fp))
+					print("Moving '%s' to '%s'" % (fp, np))
+					os.rename(fp, np)
+					return 0
+		print("No symbol files found")
 		return 1
 	
 
@@ -1159,11 +1165,8 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 					(self.args.stat and m.uuid or self.path), name))
 				continue
 			elif self.args.modules:
-				print("%2d %08X %s %s '%s' %s" % (
-					m.num_sections, fsize, justifyId(m, self.args.long),
-					xx(self.getSomeLoadAddress(m)), name,
-					self.getSymbolFileName(m)))
-				if m.GetUUIDString():
+				self.printModule(m)
+				if 0 and m.GetUUIDString():
 					print(
 						"curl -L https://debuginfod.debian.net/buildid/%s/debuginfo	 -o %s.pdb" % (
 #						"curl -L https://debuginfod.ubuntu.com/buildid/%s/debuginfo -o %s.pdb" % (
@@ -1194,6 +1197,13 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 					cut(self.sbt.executable.basename, 8),
 					self.process.selected_thread.frames[0].addr,
 					self.process.selected_thread.GetStopDescription(80)))
+
+	def printModule(self, m):
+		fsize = sum(s.file_size for s in m.sections)
+		print("%2d %08X %s %s '%s' %s" % (
+			m.num_sections, fsize, justifyId(m, self.args.long),
+			xx(self.getSomeLoadAddress(m)), self.getName(m),
+			self.getSymbolFileName(m)))
 
 	def getSomeLoadAddress(self, m):
 		for s in m.sections:
@@ -1362,7 +1372,7 @@ class Tool(Util):
 		if not self.args.DMPFILE:
 			parser.print_help()
 			print("LLDB version = '%s'" % lldb.SBDebugger.GetVersionString())
-		if self.args.search:
+		if not (self.args.search is None):
 			if len(self.args.DMPFILE) < 2:
 				print("USAGE: --search=MODNAME CORE PDB1 [PDB2]...")
 			tg = Target(self.args, self.debugger).load(self.args.DMPFILE[0])

@@ -9,10 +9,13 @@ parser.add_argument(
 parser.add_argument(
 	"--ldflags", "-l", help="Linker flags joined by '/'")
 parser.add_argument(
+	"--flags2", "-F", help="Flags to both compile and link joined by '/'") 
+parser.add_argument(
 	"--command", "-c", action="store_true", help="Run command")
 parser.add_argument(
-	"--docker", "-d", action="store_true",
-	help="Run command in a container")
+	"--docker", "-d", action="store_true", help="Run command in a container")
+parser.add_argument(
+	"--podman", "-p", action="store_true", help="use podman instead of docker")
 parser.add_argument(
 	"--lid", action="store_true",
 	help="Don't inhibit systemd lid switch handler")
@@ -99,11 +102,11 @@ class Input:
 			path = path.replace("\\", "/")
 			line = path + rest
 		line = line.replace("\r", "")
-		leftToRight = True
+		leftLocation = re.match(r"([/\w.]+:\d+)(.+)", line)
+		leftToRight = False
 		if leftToRight:
-			m = re.match(r"([/\w.]+:\d+)(.+)", line)
-			if m:
-				path, rest = m.groups()
+			if leftLocation:
+				path, rest = leftLocation.groups()
 				line = "%s at %s" % (rest, path)
 		if not line.endswith("\n"):
 			line += "\n"
@@ -111,12 +114,8 @@ class Input:
 			log.write(line)
 			log.flush()
 		if self.verbose:
-			if hasattr(self, "next") and datetime.datetime.now() < self.next:
-				tt = ""
-			else:
-				tt = "(%s)" % self.describeTime()
-				self.next = datetime.datetime.now() + datetime.timedelta(seconds=1)
-			self.verbose.write("%s %s" % (self.describeTime(), line))
+			self.verbose.write(
+				leftLocation  and line or ("%s %s" % (self.describeTime(), line)))
 			self.verbose.flush()
 		self.updateCounts(line)
 
@@ -196,8 +195,11 @@ class Build:
 				os.path.dirname(self.getGit()),
 				self.env["PATH"]])
 		self.pconf = conf.get(self.platform, {})
-		self.flagList = self.args.cflags and re.split("/+", self.args.cflags)
+		self.flagList = self.args.cflags and re.split("/+", self.args.cflags) or []
 		self.ldFlags = self.args.ldflags and re.split("/+", self.args.ldflags) or []
+		commonFlags = self.args.flags2 and re.split("/+", self.args.flags2) or []
+		self.flagList += commonFlags
+		self.ldFlags += commonFlags
 		if not "-v" in self.ldFlags:
 			self.ldFlags.append("-v")
 		self.paths = Paths(self, base, self.args)
@@ -333,7 +335,7 @@ class Build:
 							"-DCMAKE_CXX_FLAGS=%s" % " ".join(flags),
 							"-DCMAKE_C_FLAGS=%s" % " ".join(flags)]
 				if self.ldFlags:
-					cmd += ["-DCMAKE_EXE_LINKER_FLAGS=" + " ".join(flags)]
+					cmd += ["-DCMAKE_EXE_LINKER_FLAGS=" + " ".join(self.ldFlags)]
 			prefix = self.getConf("cmdPrefix")
 			if prefix:
 				self.bl.prefix = "nice ionice -n7".split(" ") + prefix
@@ -347,14 +349,14 @@ class Build:
 						os.path.join(os.getcwd(), top))
 					build = os.path.realpath(self.paths.build)
 					self.bl.prefix = [
-						"docker", "run", "--rm",
+						self.args.podman and "podman" or "docker", "run", "--rm",
 						"-v", f"{base}:{base}"]
 					if base != build:
-						self.bl.prefix +=["-v", f"{build}:{build}"]
+						self.bl.prefix += ["-v", f"{build}:{build}"]
+					if not self.args.podman:
+						self.bl.prefix += ["-u", str(os.getuid())]
 					self.bl.prefix += [
-						"-u", str(os.getuid()),
-						"-w", build,
-						"-e", f"HOME={build}",
+						"-w", build, "-e", f"HOME={build}",
 						"-t"] + dockerImage.split(" ") + [
 							"ionice", "-n7"]
 			self.bl.logCommand(cmd, log, self.env)
