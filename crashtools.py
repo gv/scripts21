@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import print_function
 "LLDB commands to get stuff from crash dumps"
-import argparse, re, os, sys, time, subprocess, struct
+import argparse, re, os, sys, time, subprocess, struct, ctypes, shlex
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("DMPFILE", help="Path to core file", nargs="*")
@@ -11,6 +11,8 @@ parser.add_argument(
 	"-r", "--storage", help="Path to binary archive")
 parser.add_argument(
 	"-m", "--modules", action="store_true", help="List binaries")
+parser.add_argument(
+	"--sections", action="store_true", help="List binaries with sections")
 parser.add_argument(
 	"-a", "--absent", action="store_true",
 	help="List binaries not in storage")
@@ -59,8 +61,13 @@ parser.add_argument(
 	"-Y", "--threadm",
 	help="Print all words from stack N using `memory read -fA`")
 parser.add_argument(
-	"--search",
-	help="Module name to search the debuginfo for, rest of args are candidates")
+	"--smod",
+	help="Module name to search the debuginfo for, rest of args see --search")
+parser.add_argument(
+	"--search", action="store_true",
+	help="Search for debuginfo, arg1=CRASH rest=debuginfo or zip files")
+parser.add_argument(
+	"--slim", help="Same as --search but stop after NUM finds")
 parser.add_argument(
 	"-D", "--disassembly", action="store_true",
 	help="Show disassembly of functions in the stack")
@@ -71,7 +78,7 @@ parser.add_argument(
 	"-w", "--dverbose", action="store_true",
 	help="LLDB verbose output")
 parser.add_argument(
-	"-l", "--long", action="store_true", help="Not abbrev build ids")
+	"-f", "--long", action="store_true", help="Not abbrev build ids")
 
 def __lldb_init_module(debugger, internal_dict):
 	"To load: command script import ~/stuff/crashtools.py"
@@ -197,6 +204,11 @@ def check(error):
 def cut(s, limit):
 	return len(s) > (limit+3) and "%s..." % s[:limit] or s
 
+def getIdFromModSpec(ms):
+	uuid = ctypes.string_at(int(ms.GetUUIDBytes()), ms.GetUUIDLength())
+	return uuid.hex().upper()
+	
+
 def getId(m, long=False):
 	s = m.GetUUIDString()
 	if not s:
@@ -282,7 +294,7 @@ class Count:
 
 class WorkCount:
 	def __init__(self, todo=0):
-		self.done = 0
+		self.done = self.successful = 0
 		self.total = todo
 
 class DebuggerError(Exception):
@@ -619,11 +631,11 @@ class Target(Util):
 				 not m.file.fullpath.startswith(self.args.storage) and\
 				 not m.file.fullpath.startswith(self.storagePath):
 				continue
-			self.matchDebugInfoFile(m, pdb)
+			self.addDebugInfoFile(m, pdb)
 		self.verb("DONE\n")
 		return self
 
-	def matchDebugInfoFile(self, mod, path):
+	def addDebugInfoFile(self, mod, path):
 		self.runDebuggerCommand("target symbols add %s" % path)
 		if not mod:
 			for m2 in self.sbt.modules:
@@ -644,22 +656,36 @@ class Target(Util):
 			mod.GetSymbolFileSpec(),
 			mod.GetNumCompileUnits()))
 
+	def matchDebugInfoFile(self, mod, path):
+		if mod:
+			raise Exception("TODO")
+		specs = lldb.SBModuleSpecList.GetModuleSpecifications(path)
+		for m2 in self.sbt.modules:
+			if getId(m2, True) == getIdFromModSpec(specs.GetSpecAtIndex(0)):
+				return True
+		raise DebuggerError("Symbol file '%s' doesn't match %s" % (
+			path, mod and ("module %s" % mod) or "any  module"))
+
 	def search(self, paths):
-		search = self.args.search
+		search = self.args.smod
+		limit = self.args.slim and int(self.args.slim) or float("inf")
 		if search:
 			matchingModsWithoutOrWithSyms = [[],[]]
 			for m in self.sbt.modules:
 				bn = m.GetFileSpec().basename
 				if search == bn or search.split(".")[0] == bn.split(".")[0]:
-					matchingModsWithoutOrWithSyms[m.GetSymbolFileSpec().IsValid()].append(m)
+					hasSym = m.GetSymbolFileSpec().IsValid() and\
+						m.GetSymbolFileSpec().fullpath != m.GetFileSpec().fullpath
+					matchingModsWithoutOrWithSyms[hasSym].append(m)
 			self.verb("Matching=%s\n" % (matchingModsWithoutOrWithSyms))
 			if not matchingModsWithoutOrWithSyms[False]:
 				if matchingModsWithoutOrWithSyms[True]:
 					raise Exception(
 						"Modules '%s' already has matching symbols" % (
 							matchingModsWithoutOrWithSyms[True]))
-			raise Exception("No module matching '*/%s'" % self.args.search)
+				raise Exception("No module matching '%s'" % search)
 		cnt = WorkCount(len(paths))
+		savedPaths = []
 		for i, path in enumerate(paths):
 			cnt.done = i
 			if path.endswith(".zip"):
@@ -678,20 +704,28 @@ class Target(Util):
 					self.print("Extracting '%s'..." % bn, cnt)
 					fp = os.path.join(tmpDir, bn)
 					open(fp, "wb").write(zf.read(name))
-					try:
-						self.matchDebugInfoFile(
-							search and matchingModsWithoutOrWithSyms[0][0], fp)
-					except DebuggerError as e:
-						self.print("%s. Removing '%s'..." % (e, fp), cnt)
-						os.unlink(fp)
-						continue
-					# Good file
-					np = os.path.join(self.storagePath, os.path.basename(fp))
-					print("Moving '%s' to '%s'" % (fp, np))
-					os.rename(fp, np)
-					return 0
-		print("No symbol files found")
-		return 1
+					savedPaths += self.saveTmpIfMatch(fp, search, cnt)
+				if len(savedPaths) >= limit:
+					break
+		if not savedPaths:
+			print("No symbol files found")
+			return 1
+		print(shlex.join(["gdb", self.path] + sum(
+			[["-ex","add-symbol-file " + x] for x in savedPaths], [])))
+
+	def saveTmpIfMatch(self, fp, search, cnt):
+		try:
+			self.matchDebugInfoFile(
+				search and matchingModsWithoutOrWithSyms[0][0], fp)
+		except DebuggerError as e:
+			self.print("%s. Removing '%s'..." % (e, fp), cnt)
+			os.unlink(fp)
+			return []
+		# Good file
+		np = os.path.join(self.storagePath, os.path.basename(fp))
+		print("Moving '%s' to '%s'" % (fp, np))
+		os.rename(fp, np)
+		return [np]
 	
 
 	def runDebuggerCommand(self, cmd):
@@ -1135,7 +1169,7 @@ class Target(Util):
 		else:
 			raise Exception(msg)
 
-	def printModules(self, tool):
+	def listModules(self, tool):
 		count = Count()
 		mtime = time.localtime(os.path.getmtime(self.path))
 		if self.args.modules:
@@ -1164,14 +1198,14 @@ nsect, all sections size on disk, id, load addr, name, symfile")
 				print(time.strftime("%Y-%m-%d %H:%M| %%s %%s", mtime) % (
 					(self.args.stat and m.uuid or self.path), name))
 				continue
-			elif self.args.modules:
+			elif self.args.modules or self.args.sections:
 				self.printModule(m)
 				if 0 and m.GetUUIDString():
 					print(
 						"curl -L https://debuginfod.debian.net/buildid/%s/debuginfo	 -o %s.pdb" % (
 #						"curl -L https://debuginfod.ubuntu.com/buildid/%s/debuginfo -o %s.pdb" % (
 							getId(m, True).lower(), m.file.basename))
-				if fsize:
+				if self.args.sections and fsize:
 					def printSec(prefix, sec):
 						print("%s%s+%s %s" % (
 							prefix, xx(sec.GetLoadAddress(self.sbt)),
@@ -1372,9 +1406,10 @@ class Tool(Util):
 		if not self.args.DMPFILE:
 			parser.print_help()
 			print("LLDB version = '%s'" % lldb.SBDebugger.GetVersionString())
-		if not (self.args.search is None):
+		if self.args.search or self.args.smod or self.args.slim:
 			if len(self.args.DMPFILE) < 2:
-				print("USAGE: --search=MODNAME CORE PDB1 [PDB2]...")
+				print("\
+USAGE: (--search|--smod=MODNAME|--slim=NUM) CORE PDB1 [PDB2]...")
 			tg = Target(self.args, self.debugger).load(self.args.DMPFILE[0])
 			return tg.search(self.args.DMPFILE[1:])
 		self.args.DMPFILE.sort(key=os.path.getmtime, reverse=True)
@@ -1420,15 +1455,15 @@ class Tool(Util):
 			t.doCmd("bt")
 		elif self.args.threadf:
 			t.printDecodedFrames(t.process.selected_thread)
-		elif self.args.modules or self.args.absent:
-			t.printModules(self)
+		elif self.args.modules or self.args.sections or self.args.absent:
+			t.listModules(self)
 		elif self.args.scan:
 			t.printRegions()
 		elif not self.args.stat:
 			t.printRegions()
 		if not (self.args.modules or self.args.absent):
 			if self.args.stat:
-					t.printModules(self)
+					t.listModules(self)
 
 def icu(ptr, sbp, err):
 	"""

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import print_function
 "Analyze debug info and report .text size contribution per directory/file/line"
-import argparse, os, re, subprocess, sys, datetime
+import argparse, os, re, subprocess, sys, datetime, struct
 
 take_off = datetime.datetime.now()
 parser = argparse.ArgumentParser(description=__doc__)
@@ -82,6 +82,10 @@ parser.add_argument(
 	help="Print some data about debuginfo files")
 parser.add_argument(
 	"--match", help="match debuginfo files to this file")
+parser.add_argument(
+	"--features", "-F", action="store_true",
+	help="Show files saved to -features_dir directory\
+	(-use_counters=1, 8 features per PC)")
 parser.add_argument(
 	"--lldb", "-P", help="Path to lldb")
 parser.add_argument(
@@ -165,6 +169,9 @@ class Input:
 			   os.path.realpath(pdb):
 				raise Exception("Symbol file path must be '%s' but is '%s'" % (
 					pdb, self.module.GetSymbolFileSpec().fullpath))
+		# This is needed for ResolveLoadAddress to work
+		sec = self.getCodeSection()
+		self.target.SetSectionLoadAddress(sec, sec.GetFileAddress())
 		sys.stderr.write("Module='%s' %d symbols in '%s' %d CUs\n" % (
 			self.module.GetFileSpec(),
 			self.module.GetNumSymbols(),
@@ -606,7 +613,9 @@ class Context:
 		if not self.args.input:
 			sys.stderr.write("No input files\n")
 			sys.exit(1)
-		inputs = [Input(p, self.args) for p in self.args.input]
+		self._run([Input(p, self.args) for p in self.args.input])
+
+	def _run(self, inputs):
 		for input in inputs:
 			self.allFiles.size += input.getFileSize()
 			self.allCode.size += input.getCodeSize()
@@ -892,8 +901,6 @@ class Calls(Context):
 				input.run = input.getSymbols
 			else:
 				input.run = input.getInstructions
-				sec = input.getCodeSection()
-				input.target.SetSectionLoadAddress(sec, sec.GetFileAddress())
 
 	def dumpSymbol(self, s):
 		addr = s.GetStartAddress()
@@ -1210,13 +1217,94 @@ class Diff(Calls):
 			ss = self.allMap[s.name] = []
 		ss.append(s)
 
+class Features(Context):
+	def getPc(self, counterId):
+		# Entry = PC + Flags (TODO: What flags mean?)
+		off = 16*counterId
+		if off > self.ts.GetByteSize():
+			raise Exception("%d feature not found (max=%d)" % (
+				counterId, self.ts.GetByteSize() / 16))
+		data = self.ts.GetSectionData(off, 8)
+		return self.input.check(data.GetUnsignedInt64(self.input.error, 0))
+	
+	def _run(self, inputs):
+		if len(inputs) > 1:
+			raise Exception("ToDO")
+		self.input = inputs[0]
+		executable = inputs[0].target.GetModuleAtIndex(0)
+		self.ts = executable.FindSection("__sancov_pcs")
+		class Count:
+			def __init__(self):
+				self.extra = 0
+		self.count = Count()
+		self.count.pcs = int(self.ts.GetByteSize()/16)
+		self.count.counters = executable.FindSection("__sancov_cntrs").GetByteSize()
+		if extra := executable.FindSection("__libfuzzer_extra_counters"):
+			self.count.extra = extra.GetByteSize()
+		print("%s %s counters, %s PCs, %s extra counters" % (
+			executable, nn(self.count.counters), nn(self.count.pcs),
+			nn(self.count.extra)))
+		for path in self.args.PREFIX:
+			if os.path.isdir(path):
+				ps = [os.path.join(path, n) for n in os.listdir(path)]
+				print(f"{len(ps)} files in {path!r}") 
+				for p in sorted(ps, key=lambda x: os.stat(x).st_mtime, reverse=True):
+					self.listFeatures(p, inputs[0].target)
+			else:
+				self.listFeatures(path, inputs[0].target)
+
+	def listFeatures(self, path, target):
+		prefix = "features."
+		bn = os.path.basename(path)
+		fuzzInpPath = None
+		if prefix:
+			if not prefix in path:
+				fuzzInpPath = path
+				path = prefix + path
+			else:
+				fuzzInpPath = path.replace(prefix, "")
+		if fuzzInpPath:
+			try:
+				finp = open(fuzzInpPath, "rb").read()
+				mtime = datetime.datetime.fromtimestamp(os.stat(fuzzInpPath).st_mtime)
+				print(f"{mtime} {fuzzInpPath}={finp}")
+			except Exception as e:
+				print(f"Error opening '{finp}'='{e}'")
+		with open(path, "rb") as f:
+			features = []
+			while fid := f.read(4):
+				features.append(struct.unpack("<I", fid)[0])
+			for fid in features:
+				try:
+					pc = self.getPc(fid >> 3)
+				except Exception as e:
+					print(f"{path}: {e}")
+					continue
+				c = target.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
+					addr := target.ResolveLoadAddress(pc), lldb.eSymbolContextEverything)
+				if c.function.IsValid():
+					name = c.function.name
+					off = addr.offset-c.function.addr.offset
+				elif c.symbol.IsValid():
+					name = c.symbol
+					off = addr.offset-c.symbol.addr.offset
+				else:
+					name = "no func"
+					off=0
+				sp = c.line_entry.file.fullpath
+				print(f" {bn[0:8]}: %X*%d {name}+{off} {sp}:%d" % (
+					pc, fid & 7, c.line_entry.line))
+		
+
 if sum(int(not not x) for x in (
 		args.target, args.show, args.diff, args.file, args.calls, args.map)) > 1:
 	print("Can have only 1 of --target --show --diff --file --calls --map")
 	sys.exit(1)
 if args.git:
 	args.file = True
-if args.diff:
+if args.features:
+	Features(args).run()	
+elif args.diff:
 	Diff(args).run()
 elif args.target:
 	r = CallGraph(args).run()
