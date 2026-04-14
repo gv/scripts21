@@ -26,6 +26,9 @@
         alias d4='d3 -u $(id -u)'
         alias d5='d4 -e "HOME=$(pwd)"'
         alias d3i='inh docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
+        alias p3='podman run --rm -v $(pwd):$(pwd) -w $(pwd)'
+        alias p4='p3 -u $(id -u)'
+        alias p5='p4 -e "HOME=$(pwd)"'
         vgYtdlFlags="--abort-on-unavailable-fragment --output \
         \"%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s\""
         alias y0="python2 ~/src/youtube-dl/youtube_dl/__main__.py"

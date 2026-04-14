@@ -83,9 +83,15 @@ parser.add_argument(
 parser.add_argument(
 	"--match", help="match debuginfo files to this file")
 parser.add_argument(
+	"--f1", action="store_true",
+	help="Show files saved to -features_dir directory\
+	(-use_counters=0, 1 feature per PC)")
+parser.add_argument(
 	"--features", "-F", action="store_true",
 	help="Show files saved to -features_dir directory\
 	(-use_counters=1, 8 features per PC)")
+parser.add_argument(
+	"--pid", "-p", help="For --features: read counter values from a process")
 parser.add_argument(
 	"--lldb", "-P", help="Path to lldb")
 parser.add_argument(
@@ -1235,15 +1241,25 @@ class Features(Context):
 		self.ts = executable.FindSection("__sancov_pcs")
 		class Count:
 			def __init__(self):
-				self.extra = 0
+				self.extra = self.zero = 0
 		self.count = Count()
 		self.count.pcs = int(self.ts.GetByteSize()/16)
 		self.count.counters = executable.FindSection("__sancov_cntrs").GetByteSize()
 		if extra := executable.FindSection("__libfuzzer_extra_counters"):
 			self.count.extra = extra.GetByteSize()
-		print("%s %s counters, %s PCs, %s extra counters" % (
-			executable, nn(self.count.counters), nn(self.count.pcs),
-			nn(self.count.extra)))
+		zeroMsg = ""
+		if self.args.pid:
+			with open(f"/proc/{self.args.pid}/mem", "rb") as fmem:
+				cntrs = executable.FindSection("__sancov_cntrs")
+				fmem.seek(cntrs.GetFileAddress())
+				print("offset=%x" % cntrs.GetFileAddress())
+				vs = fmem.read(cntrs.GetByteSize())
+				for bv in vs:
+					if bv == 0:
+						self.count.zero += 1
+				zeroMsg = nn(self.count.zero) + " zero, "
+		print(f"{executable} %s counters, %s PCs, {zeroMsg}%s extra counters" % (
+			nn(self.count.counters), nn(self.count.pcs), nn(self.count.extra)))
 		for path in self.args.PREFIX:
 			if os.path.isdir(path):
 				ps = [os.path.join(path, n) for n in os.listdir(path)]
@@ -1270,38 +1286,46 @@ class Features(Context):
 				print(f"{mtime} {fuzzInpPath}={finp}")
 			except Exception as e:
 				print(f"Error opening '{finp}'='{e}'")
+		if not os.path.isfile(path):
+			print(path + ": not a file")
+			return
 		with open(path, "rb") as f:
 			features = []
 			while fid := f.read(4):
 				features.append(struct.unpack("<I", fid)[0])
-			for fid in features:
-				try:
-					pc = self.getPc(fid >> 3)
-				except Exception as e:
-					print(f"{path}: {e}")
-					continue
-				c = target.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
-					addr := target.ResolveLoadAddress(pc), lldb.eSymbolContextEverything)
-				if c.function.IsValid():
-					name = c.function.name
-					off = addr.offset-c.function.addr.offset
-				elif c.symbol.IsValid():
-					name = c.symbol
-					off = addr.offset-c.symbol.addr.offset
-				else:
-					name = "no func"
-					off=0
-				sp = c.line_entry.file.fullpath
-				print(f" {bn[0:8]}: %X*%d {name}+{off} {sp}:%d" % (
-					pc, fid & 7, c.line_entry.line))
+		for fid in features:
+			if self.args.f1:
+				cid, mode = fid, ""
+			else:
+				cid, mode = fid >> 3, "*%d" % (fid & 7)
+			try:
+				pc = self.getPc(cid)
+			except Exception as e:
+				print(f"{path}: {e}")
+				continue
+			c = target.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
+				addr := target.ResolveLoadAddress(pc), lldb.eSymbolContextEverything)
+			if c.function.IsValid():
+				name = c.function.name
+				off = addr.offset - c.function.addr.offset
+			elif c.symbol.IsValid():
+				name, off = c.symbol, addr.offset - c.symbol.addr.offset
+			else:
+				name, off = "no func", 0
+			sp = c.line_entry.file.fullpath
+			print(f" {bn[0:8]}: %X{mode} {name}+{off} {sp}:%d" % (
+				pc, c.line_entry.line))
 		
 
-if sum(int(not not x) for x in (
-		args.target, args.show, args.diff, args.file, args.calls, args.map)) > 1:
-	print("Can have only 1 of --target --show --diff --file --calls --map")
-	sys.exit(1)
 if args.git:
 	args.file = True
+if args.pid or args.f1:
+	args.features = True
+if sum(int(not not x) for x in (
+		args.target, args.show, args.diff, args.file, args.calls, args.map,
+		args.features)) > 1:
+	print("Can have only 1 of --target --show --diff --file --calls --map --features")
+	sys.exit(1)
 if args.features:
 	Features(args).run()	
 elif args.diff:
