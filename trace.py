@@ -35,6 +35,7 @@ print paths relative to /win/kodeks.
 ... TODO
 
 Advantages over bcc/bpftrace:
+ Can trace inline functions
  Can unwind DWARF stack
  Synchronous, can't loose samples, doesn't need buffer size tuning
  Works on Mac (or at least did at some point)
@@ -270,6 +271,48 @@ class Context:
 
 GlobalContext = Context()
 
+class FuzzDict:
+	fd = None
+	name = "fdict.txt"
+
+	@staticmethod
+	def escape(s: bytes | str, key: str | None = None) -> str:
+		s = s.encode("utf-8")
+		out = []
+
+		for b in s:
+				c = chr(b)
+
+				if c == "\\":
+						out.append("\\\\")
+				elif c == '"':
+						out.append('\\"')
+				elif 32 <= b <= 126:	# printable ASCII
+						out.append(c)
+				else:
+						out.append(f"\\x{b:02x}")
+
+		value = '"' + "".join(out) + '"'
+		return value
+
+	@staticmethod
+	def get():
+		if FuzzDict.fd:
+			return FuzzDict.fd
+		self = FuzzDict()
+		self.words = set()
+		if os.path.isfile(self.name):
+			for line in open(self.name):
+				self.words.add(line.strip())
+		FuzzDict.fd = self
+		return self
+
+	def add(self, word):
+		jw = self.escape(word)
+		if not jw in self.words:
+			self.words.add(jw)
+			open(self.name, "a").write(jw + "\n")
+
 class NamedTracePoint(TracePoint):
 	def parse(self, name, addr=None):
 		self.name = name
@@ -451,6 +494,20 @@ size=64 name=icu_66::UnicodeString
 		def s(format, start):
 			return struct.unpack(
 				format, getMemory(start, struct.calcsize(format)))
+		def named(name):
+			val = frame.FindVariable(name)
+			if val.IsValid():
+				return val.GetValueAsUnsigned()
+			for fr in frame.thread.frames:
+				if fr.GetFunctionName().split("(")[0] == self.symbolName:
+					val = fr.FindVariable(name)
+					if val.IsValid():
+						return val.GetValueAsUnsigned()
+					break
+			raise Exception("invalid var %s" % name)
+		def fdict(val):
+			FuzzDict.get().add(val)
+			return val
 		r = eval(cmd, {}, dict(
 			f=frame, p=frame.thread.process, e=error, z=print,
 			m=getMemory, o=output,
@@ -458,7 +515,8 @@ size=64 name=icu_66::UnicodeString
 			x=xd, s=s,
 			vi=vi, vi0c=vi0c, v=v,
 			icu=icu, u16=u16,
-			levelIn=levelIn, levelOut=levelOut, level=level))
+			levelIn=levelIn, levelOut=levelOut, level=level,
+			n=named, fdict=fdict))
 		return r
 
 	def filterAccepts(self, frame, toolProc):
@@ -922,7 +980,7 @@ class Process(Util):
 			f = thread.frames[idx]
 			head = "%d" % idx
 			sl = self.getSourceLine(f, " at %s:%d")
-			name = f.addr.symbol.name
+			name = f.GetFunctionName()
 			if 1 or sl and name:
 				name = (name or "").split("(")[0]
 				sys.stderr.write("\r")
@@ -966,7 +1024,7 @@ class Process(Util):
 	def handleBreakpoint(self, frame, bp_loc):
 		tr = self.breakpoints.get(frame.pc)
 		if 1 and tr is None and bp_loc is None:
-			print("stopped in '%s'" % frame.name)
+			sys.stderr.write("stopped in '%s'..." % frame.name)
 		try:
 			tr = tr or self.breakpoints[frame.name.split("@")[0]]
 		except KeyError:
@@ -1043,7 +1101,7 @@ class Process(Util):
 			self.breakpoints[loc.GetLoadAddress()] = t
 		self.count.bpLocations += b.num_locations
 		# Does not get called on Linux
-		b.SetScriptCallbackFunction("callProcessHandleBp2")
+		b.SetScriptCallbackFunction(__name__ + ".callProcessHandleBp2")
 		t.debuggerBps.append(b)
 		if 1:
 			for f in t.filters:
@@ -1133,7 +1191,8 @@ class Process(Util):
 					frame = self.getBpFrame(ev)
 					if frame:
 						if not self.handleBreakpoint(frame, None):
-							print("BP not found")
+							sys.stderr.write("BP not found")
+							self.printStack(frame.thread)
 					else:
 						print("Bad stop frame='%s'" % frame)
 				self.process.Continue()
