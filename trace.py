@@ -13,7 +13,7 @@ NAME_GLOB*: BP on every symbol with full name matching NAME_GLOB*
 ~NAME: Use debugger API that sets BP by name
 @FILTER: Only trace when function FILTER is in the stack
 #COMMAND: Run debugger command on each trace. 
- If command contains parens (or -p option is on), it's a python script.
+ If command contains parens (or --python option is on), it's a python script.
  For available calls & vars see source
 
 Examples:
@@ -40,6 +40,7 @@ Advantages over bcc/bpftrace:
  Synchronous, can't loose samples, doesn't need buffer size tuning
  Works on Mac (or at least did at some point)
  Can parse ICU UnicodeStrings
+ C++ unmangled names handling
 
 Disadvantages re. bcc:
  Very slow
@@ -79,7 +80,8 @@ parser.add_argument(
 parser.add_argument(
 	"--output", "-o", help="Text output path")
 parser.add_argument(
-	"--python", "-p", action="store_true", help="Only python commands")
+	"--python", action="store_true", help="Only python commands")
+parser.add_argument( "--PID", "-p", help="Attach to PID")
 parser.add_argument(
 	"--slen_disabled", "-s", help="Stack limit")
 parser.add_argument(
@@ -91,7 +93,6 @@ parser.add_argument("-v", "--verbose", action="store_true")
 parser.add_argument(
 	"--lldb", "-P", help="Path to lldb")
 parser.add_argument("FUNCTION", nargs="*")
-parser.add_argument("PID", nargs="?")
 args = parser.parse_args()
 
 if args.lldb:
@@ -147,16 +148,6 @@ def callProcessHandleBp2(frame, bp_loc, dict):
 	process = frame.GetThread().GetProcess()
 	print(" addr=%s=%x sp=%X" % (frame.addr, frame.pc, frame.sp))
 	Process.objects[process.id].handleBreakpoint(frame, bp_loc)
-
-def callProcessHandleBp(frame, bp_loc, dict):
-	process = frame.GetThread().GetProcess()
-	error = lldb.SBError()
-	args = [
-		frame.reg[n].GetValueAsUnsigned() for n in [
-			"rdi", "rsi", "rdx", "rcx"]]
-	print(" addr=%s=%x sp=%X args=%s" % (
-		frame.addr, frame.pc, frame.sp, ["%X" % t for t in args]))
-	hexDumpMem(process, args[1], args[1] + args[2], error)
 
 class Util:
 	def check(self, result):
@@ -863,6 +854,12 @@ class Process(Util):
 	def __init__(self, options):
 		self.args = options
 		self.debugger = lldb.SBDebugger.Create()
+		# Not sure exactly how but this fixes SetBreakpointCommandCallback
+		# on python3. `script` command runs python code in the same namespace
+		# as SBCC, which can import the namespace of this script as __main__.
+		# Another option is to connect them via `lldb` module object
+		# which they share
+		self.debugger.HandleCommand("script import __main__")
 		self.error = lldb.SBError()
 		self.breakpoints = {}
 		self.lastPrintedStackReversed = []
@@ -923,17 +920,16 @@ class Process(Util):
 			pli.SetListener(self.debugger.GetListener())
 			pli.SetLaunchFlags(lldb.eLaunchFlagStopAtEntry)
 			self.process = self.check(self.target.Launch(pli, self.error))
-		elif re.match(r"\d+", pid):
-			ai = lldb.SBAttachInfo(int(pid))
-			sys.stderr.write(
-				"Attaching pid=%d..." % ai.GetProcessID())
+		elif pid:
+			if re.match(r"\d+", pid):
+				ai = lldb.SBAttachInfo(int(pid))
+				sys.stderr.write("Attaching pid=%d..." % ai.GetProcessID())
+			else:
+				ai = lldb.SBAttachInfo(pid, self.args.wait)
+				sys.stderr.write("Attaching name='%s'..." % pid)
 		else:
 			self.process = self.check(self.target.ConnectRemote(
-				self.debugger.GetListener(),
-				pid, "gdb-remote", self.error))
-		if 0:
-			ai = lldb.SBAttachInfo(pid, self.args.wait)
-			sys.stderr.write("Attaching name='%s'..." % pid)
+				self.debugger.GetListener(), pid, "gdb-remote", self.error))
 		if not hasattr(self, "process") and not launch:
 			self.process = self.check(self.target.Attach(
 				ai, self.error))
@@ -1100,8 +1096,10 @@ class Process(Util):
 			self.print("Location %s" % loc)
 			self.breakpoints[loc.GetLoadAddress()] = t
 		self.count.bpLocations += b.num_locations
-		# Does not get called on Linux
-		b.SetScriptCallbackFunction(__name__ + ".callProcessHandleBp2")
+		# Need second arg bc 1 parameter version of this func doesn't have
+		# return value
+		check(b.SetScriptCallbackFunction(
+			"__main__.callProcessHandleBp2", lldb.SBStructuredData()))
 		t.debuggerBps.append(b)
 		if 1:
 			for f in t.filters:
@@ -1125,34 +1123,6 @@ class Process(Util):
 #  eStopReasonInstrumentation
 #};
 
-	def getBpFrame(self, ev):
-		# What didn't work:
-		frame = self.process.selected_thread.GetFrameAtIndex(0)
-		if frame:
-			return frame
-		frame = lldb.SBThread.GetStackFrameFromEvent(ev)
-		if frame:
-			return frame
-		# frame = lldb.SBThread.GetThreadFromEvent(ev).GetFrameAtIndex(0)
-		#
-		# This hangs on Linux
-		# for t in self.process.thread:
-		for tn in range(self.process.GetNumThreads()):
-			t = self.process.GetThreadAtIndex(tn)
-			# This worked on Linux:
-			# if not t:
-			if t is None:
-				print("Thread %d is '%s'" % (tn, t))
-				continue
-			print("tid=%d reason=%s" % (t.id, t.GetStopReason()))
-			# Worked on Linux
-			if t.GetStopReason() == lldb.eStopReasonBreakpoint:
-				return t.GetFrameAtIndex(0)
-			# Should work on Mac...
-			if 0 and t.GetStopReason() == lldb.eStopReasonSignal:
-				return t.GetFrameAtIndex(0)
-		return None
-
 	def runTrace(self):
 		if len(self.breakpoints) == 0:
 			raise Exception("No breakpoints set!")
@@ -1174,6 +1144,7 @@ class Process(Util):
 				pass
 			state = lldb.SBProcess.GetStateFromEvent(ev)
 			if state == lldb.eStateStopped:
+				# Run return TPs that we reached by calling StepOut()
 				self.count.stopped += 1
 				tn = -1
 				for tn in range(self.process.GetNumThreads()):
@@ -1184,17 +1155,6 @@ class Process(Util):
 						del self.tasksBySp[frame.sp]
 						tn = -1
 						break
-				# On Mac handleBreakpoint is called by attached script
-				# (not on Linux) 
-				if tn != -1 and sys.platform != "darwin":
-					tn = -1
-					frame = self.getBpFrame(ev)
-					if frame:
-						if not self.handleBreakpoint(frame, None):
-							sys.stderr.write("BP not found")
-							self.printStack(frame.thread)
-					else:
-						print("Bad stop frame='%s'" % frame)
 				self.process.Continue()
 			elif state == lldb.eStateRunning:
 				pass
@@ -1264,17 +1224,18 @@ class Tool:
 		pid = self.args.PID
 		functions = self.args.FUNCTION
 		launch = self.args.launch and self.args.launch.split(" ")
-		if "@@" in functions:
-			i = functions.index("@@")
-			launch = functions[:i]
-			functions = functions[i+1:]
-		elif "@" in functions:
-			i = functions.index("@")
-			launch = functions[i + 1:]
-			functions = functions[:i]
-		if functions and not launch:
-			pid = functions[-1]
-			functions = functions[:-1]
+		if pid and launch:
+			sys.stderr.write("Can't have both -p and command")
+			sys.exit(1)
+		if not (pid or launch):
+			if "@@" in functions:
+				i = functions.index("@@")
+				launch = functions[:i]
+				functions = functions[i+1:]
+			elif "@" in functions:
+				i = functions.index("@")
+				launch = functions[i + 1:]
+				functions = functions[:i]
 		if not (pid or launch):
 			sys.stderr.write("Need PID or command\n")
 			sys.exit(1)

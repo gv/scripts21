@@ -1524,7 +1524,9 @@ class DataPrintoutContext(Util):
 				vtb0, sc, sc.GetCompileUnit(), sc.symbol))
 			pp = str(sc.symbol.name).split(" for ")
 			if (len(pp) > 1):
-				return self.findTypes1(pp[1], sbt)
+				# Heuristic: if we find "vtable for X-in-Y" it's probably Y
+				name = pp[1].split("-in-")[-1]
+				return self.findTypes1(name)
 		# Sometimes can't resolve vtable - check for desstructor
 		dest0 = self.check(
 			self.sbt.process.ReadPointerFromMemory(vtb0, self.error))
