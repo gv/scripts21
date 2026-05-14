@@ -79,17 +79,19 @@ done
 set -xe
 test -z "$efi" || test -f $ovmf.tmp || cp $ovmf $ovmf.tmp
 stty intr "^]"
-caff=$(which caffeinate) || acc=kvm
+caff=$(which caffeinate) ||\
+  acc="kvm -cpu host -display gtk,show-cursor=on,zoom-to-fit=on"
 if echo $hfwd|grep 127.0.0.2; then 
   ifconfig lo0 alias 127.0.0.2 up
 fi
 nice $caff\
 	 ${QEMU-~/src/build.qemu6/qemu-system-x86_64}\
 	 -m 1.5G\
-	 -display default,show-cursor=on -accel $acc -smp 2\
+	 -machine q35 -accel $acc -smp 2\
 	 $flags\
 	 -nic user,model=virtio-net-pci$hfwd\
-	 -serial stdio -parallel none\
+	 -parallel none\
+	 -no-reboot -no-shutdown\
 	 -device virtio-tablet-pci\
 	 $efi "$@"
 stty intr "^C"
