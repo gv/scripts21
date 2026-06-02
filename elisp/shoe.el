@@ -174,6 +174,10 @@
 (define-key global-map [insert]
  (lambda () (interactive)
   (vg-message "Overwrite mode switch disabled")))
+(define-key global-map (kbd "C-RET")
+ ;; TODO: doesn't work 
+ (lambda () (interactive)
+  (vg-message "Rectangle mark disabled")))
 (define-key global-map (kbd "s-b") 'end-of-buffer)
 (define-key global-map (kbd "C-b") 'end-of-buffer)
 (define-key global-map [f7] 'google-line)
@@ -609,7 +613,7 @@ and starts new compile. Alternatively, start new compile as
 (defun vg-tune-c () (interactive)
   (setq c-basic-offset 2
 		tab-width 2
-		js-indent-level 4
+		js-indent-level 2
 		indent-tabs-mode t
 ;		tags-case-fold-search nil
 		)
@@ -626,8 +630,8 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'c-mode-common-hook 'vg-tune-c)
  (add-hook 'js-mode-hook 'vg-tune-c)
 
-(defun my-javascript-mode-hook ()
-  (setq indent-tabs-mode t tab-width 4 js-indent-level 4)
+(defun my-javascript-mode-hook () (interactive)
+  (setq indent-tabs-mode t tab-width 2 js-indent-level 2)
   (modify-syntax-entry ?` "\"")
   (vg-message "JS mode template strings enabled"))
 (add-hook 'js-mode-hook 'my-javascript-mode-hook)
@@ -720,32 +724,29 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'compilation-error-regexp-alist-alist
 ;; sub1 = file, sub2 = line, no column, type = warning
  '(asan " \\([./][^:\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
-(add-to-list 'compilation-error-regexp-alist 'asan)
 ;; Same as asan but in parentheses
 (add-to-list 'compilation-error-regexp-alist-alist
  '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
-(add-to-list 'compilation-error-regexp-alist 'node)
 (add-to-list 'compilation-error-regexp-alist-alist
  '(meson1 "found at \\(/.+\\)" 1))
-(add-to-list 'compilation-error-regexp-alist 'meson1)
 ;; A thing in brackets
 (add-to-list 'compilation-error-regexp-alist-alist
  '(make "[[]\\([^:\n]+\\):\\([0-9]+\\):" 1 2))
-(add-to-list 'compilation-error-regexp-alist 'make)
 ;; Like `cmake` but without a ([^)]+):$ thing at the tail
 (add-to-list 'compilation-error-regexp-alist-alist
  '(cmake1
-   "^CMake \\(?:Error\\|\\(Warning\\)\\) at \\(.*\\):\\([1-9][0-9]*\\)"
+   "^CMake \\(?:Error\\|\\(Warning\\)\\) at \\(.+\\):\\([1-9][0-9]*\\)"
    2 3 nil (1)))
 (add-to-list 'compilation-error-regexp-alist-alist
+ '(cmake-stack "^  \\(.+\\):\\([1-9][0-9]*\\)" 1 2))
+(add-to-list 'compilation-error-regexp-alist-alist
  '(meson-install "^Installing \\(/[^ ]+\\)" 1 nil nil 1))
-(add-to-list 'compilation-error-regexp-alist 'meson-install)
 (add-to-list 'compilation-error-regexp-alist-alist
  '(valgrind "(\\(.+\\):\\([0-9]+\\))$" 1 2 nil 1))
 
 (setq compilation-error-regexp-alist
- '(cmake1 make asan gnu python-tracebacks-and-caml meson-install bash
-   valgrind)) 
+ '(node cmake1 cmake-stack make asan gnu python-tracebacks-and-caml
+   meson1 meson-install bash valgrind)) 
 
 (defun Vg-get-local-search-command (query)
  ;; Need an interface for Spotlight search because the Finder one is no good.
@@ -758,7 +759,7 @@ and starts new compile. Alternatively, start new compile as
 	(replace-regexp-in-string "#" ""
 	 query)))
   (format
-   "localsearch search --limit=999 --disable-color %s" query)))
+   "localsearch search --limit=999 %s" query)))
 
 
 (defun tracker-search () (interactive)
@@ -770,6 +771,8 @@ and starts new compile. Alternatively, start new compile as
 
 (define-key isearch-mode-map (kbd "s-9") 'Vg-isearch2local)
 (defun Vg-isearch2local () (interactive)
+ (end-of-buffer)
+ (insert "Q: " isearch-string)
  (Vg-start-local-search (Vg-get-local-search-command isearch-string)))
 
 (defun Vg-start-local-search (cmd)
@@ -1076,14 +1079,17 @@ and starts new compile. Alternatively, start new compile as
 (savehist-mode)
 
 (server-start)
+(setq tools-dir
+ (if (string-match "/src/" invocation-directory)
+  (expand-file-name "../lib-src" invocation-directory) invocation-directory))
 (setenv "EDITOR"
  (replace-regexp-in-string "/bin/bin/" "/bin/"
-  (if (string-match "/src/" invocation-directory)
-   (expand-file-name "../lib-src/emacsclient" invocation-directory)
-   (expand-file-name "bin/emacsclient" invocation-directory))))
+  (expand-file-name "emacsclient" tools-dir)))
 (setenv "PAGER" "cat")
 (setenv "PATH"
  "/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:$PATH" t)
+(or (string-match tools-dir (getenv "PATH"))
+ (setenv "PATH" (format "%s:$PATH" tools-dir) t))
 (setenv "GCC_COLORS" "")
 (setq shell-command-switch "-ic") ;; Load aliases in .bashrc
 (setq process-connection-type nil)  ;; No pty

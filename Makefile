@@ -34,6 +34,10 @@ perf-static: bzip2-1.0.6.m xz.m elfutils.m
 		$(MAKE) O=$O/static.perf V=1 LDFLAGS="-static -L$R/lib"\
 		EXTRA_CFLAGS=-I$R/include
 
+tigervnc.dnf:
+	 dnf install --setopt=install_weak_deps=False\
+		/usr/include/jpeglib.h /usr/lib64/pkgconfig/pam.pc
+
 Clang_DIR = /Volumes/clang+llvm-9.0.0-x86_64-darwin-apple
 elfutils.options = --enable-maintainer-mode
 binutils-gdb.options.Darwin = --disable-gold --disable-ld --enable-targets=all
@@ -118,7 +122,7 @@ _build%evince: options=-Ddjvu=enabled -Dnautilus=false\
 
 zsh%: options = --with-tcsetpgrp
 
-%emacs: options = --with-tiff=no --with-xpm=no --with-gnutls=no\
+emacs%: options = --with-tiff=no --with-xpm=no --with-gnutls=no\
 	--with-jpeg=no --with-gif=no
 
 # If I use PKG_CONFIG_LIBDIR system packages are not found

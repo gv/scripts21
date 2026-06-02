@@ -1,5 +1,6 @@
 #!/bin/bash -e
 # Configure and run XFCE session on a GPD Pocket 2
+sudo "$(dirname "$0")/usbkeys.py" --alt --insert
 sudo mkdir -p /etc/X11/rotate
 cat << END | sudo tee /etc/X11/rotate/monitor.conf
 # GPD Pocket2 (modesetting)
@@ -33,7 +34,7 @@ xrandr --output eDP-1 --scale 0.64x0.64
 xinput set-prop "pointer:Goodix Capacitive TouchScreen" --type=float\
  "Coordinate Transformation Matrix" 0 1 0 -1 0 1 0 0 1
 xset s off
-exec /etc/xdg/xfce4/xinitrc
+exec bash /etc/xdg/xfce4/xinitrc
 END
 
 set -xe
