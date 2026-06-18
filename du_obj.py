@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import print_function
 "Analyze debug info and report .text size contribution per directory/file/line"
-import argparse, os, re, subprocess, sys, datetime, struct
+import argparse, os, re, subprocess, sys, datetime, struct, difflib, json
 
 take_off = datetime.datetime.now()
 parser = argparse.ArgumentParser(description=__doc__)
@@ -250,6 +250,11 @@ class Input:
 			self.dumpSections()
 			raise KeyError("No .text section!")
 		return self.cs
+
+	def getSecContent(self, name):
+		sec = self.module.FindSection(name)
+		return self.check(sec.GetSectionData().ReadRawData(
+			self.error, 0, sec.GetFileByteSize()))
 
 	def getCodeSize(self):
 		return self.getCodeSection().GetFileByteSize()
@@ -1177,10 +1182,11 @@ class Info:
 
 class Diff(Calls):
 	def run(self):
-		if len(self.args.PREFIX) != 2:
-			raise Exception("Must have 2 arguments")
+		if len(self.args.PREFIX) < 2:
+			raise Exception("USAGE: du_obj.py --diff EXE1 EXE2 [.sec1 ...]")
 		self.i1, self.i2 = inputs =\
-			[Input(x, self.args) for x in self.args.PREFIX]
+			[Input(x, self.args) for x in self.args.PREFIX[0:2]]
+		self.secNames = self.args.PREFIX[2:]
 		self.prepare([])
 		self.i1.compareSections(self.i2)
 		fileSizes = [i.getFileSize() for i in inputs]
@@ -1205,6 +1211,22 @@ class Diff(Calls):
 		for name, l1 in self.map1.items():
 			printComparison(l1, 0, name)
 			self.printInstructionsIfNeeded(name)
+		for name in self.secNames:
+			s1, s2 = [x.getSecContent(name) for x in [self.i1, self.i2]]
+			self.diffBin(s1, s2)
+
+	def diffBin(self, a: bytes, b: bytes):
+		matcher = difflib.SequenceMatcher(None, a, b)
+		def vis(bs):
+			return json.dumps(bs.decode())
+
+		for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+			if tag == "equal":
+				continue
+			print(f"{tag.upper()}:")
+			print(f"	A[{i1}:{i2}] = {vis(a[i1:i2])}")
+			print(f"	B[{j1}:{j2}] = {vis(b[j1:j2])}")
+			print()
 
 	def printInstructionsIfNeeded(self, name):
 		if not self.args.instructions:
