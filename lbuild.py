@@ -349,11 +349,11 @@ class Build:
 						os.path.join(os.getcwd(), top))
 					build = os.path.realpath(self.paths.build)
 					self.bl.prefix = [
-						self.args.podman and "podman" or "docker", "run", "--rm",
+						self.args.docker and "docker" or "podman", "run", "--rm",
 						"-v", f"{base}:{base}"]
 					if base != build:
 						self.bl.prefix += ["-v", f"{build}:{build}"]
-					if not self.args.podman:
+					if self.args.docker:
 						self.bl.prefix += ["-u", str(os.getuid())]
 					self.bl.prefix += [
 						"-w", build, "-e", f"HOME={build}",

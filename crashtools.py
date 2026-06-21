@@ -1518,18 +1518,17 @@ class DataPrintoutContext(Util):
 		
 	def detectTypes(self, a0):
 		# print("self.filter=%s" % self.filter)
-		vtb0 = self.sbt.process.ReadPointerFromMemory(a0, self.error)
-		if not self.error.fail:
-			vtbl = self.sbt.ResolveLoadAddress(vtb0)
-			sc = self.sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
-				vtbl, 255 | lldb.eSymbolContextVariable)
-			0 and print("vtb0=%x sc='%s' cu='%s' %s" % (
-				vtb0, sc, sc.GetCompileUnit(), sc.symbol))
-			pp = str(sc.symbol.name).split(" for ")
-			if (len(pp) > 1):
-				# Heuristic: if we find "vtable for X-in-Y" it's probably Y
-				name = pp[1].split("-in-")[-1]
-				return self.findTypes1(name)
+		vtb0 = self.check(self.sbt.process.ReadPointerFromMemory(a0, self.error))
+		vtbl = self.sbt.ResolveLoadAddress(vtb0)
+		sc = self.sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
+			vtbl, 255 | lldb.eSymbolContextVariable)
+		0 and print("vtb0=%x sc='%s' cu='%s' %s" % (
+			vtb0, sc, sc.GetCompileUnit(), sc.symbol))
+		pp = str(sc.symbol.name).split(" for ")
+		if (len(pp) > 1):
+			# Heuristic: if we find "vtable for X-in-Y" it's probably Y
+			name = pp[1].split("-in-")[-1]
+			return self.findTypes1(name)
 		# Sometimes can't resolve vtable - check for desstructor
 		dest0 = self.check(
 			self.sbt.process.ReadPointerFromMemory(vtb0, self.error))
@@ -1545,6 +1544,7 @@ class DataPrintoutContext(Util):
 		types1 = self.findTypes(name)
 		# Heuristics
 		name = name.split("<")[-1].split(",")[0]
+		name = name.replace("void * ", "")
 		types = self.findTypes1(name)
 		if len(types) == 1:
 			return types

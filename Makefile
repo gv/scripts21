@@ -12,6 +12,7 @@ B = $(platform:Darwin=build)$(cf)$(vgccversion)
 tools0 = $(platform:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
 tools = $(tools0:Linux=)
 cflags_global = $(cf:-a=-fsanitize=address)
+install_target = install
 
 # ---------- project specific options ----------
 
@@ -198,6 +199,16 @@ gvfs-new.options = -Dtmpfilesdir=no -Dsystemduserunitdir=no -Dgcr=false\
 	-Dgoogle=false -Donedrive=false -Dgphoto2=false -Dmtp=false\
 	-Dafp=false -Dnfs=false -Dsftp=false -Dwsdd=false -Dburn=false
 
+# This target doesn't work on ninja
+# subversion.options = -D SVN_ENABLE_RA_SERF=0 -D SVN_ENABLE_SWIG_PERL=1
+# subversion%: install_target = install-swig-pl
+# Use subversion.make. Need to run "install" target first 
+subversion.overrides = install-swig-pl
+subversion.options = --with-swig-perl --with-lz4=internal\
+	--with-utf8proc=internal --with-serf
+
+# $O/$B.subversion/build.ninja: cmake-disabled
+
 T = samba/source3
 
 samba/source3.options = CFLAGS="-O -Wno-deprecated-declaration"
@@ -359,7 +370,8 @@ $R/%.installed.logc: $S/%/*.gyp $(MAKEFILE_LIST) $(%.t)
 $R/%.installed.logc: $O/$B.%/%.ninja.success.logc $(MAKEFILE_LIST)
 	mkdir -p $(dir $@)
 	(cd $O/$B.$* && PATH=$(tools)$(PATH)\
-		CMAKE_INSTALL_MODE=SYMLINK ninja install) 2>&1 | tee $@.tmp.txt
+		CMAKE_INSTALL_MODE=SYMLINK ninja $(install_target)) 2>&1 |\
+		tee $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
 $R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST) $f
