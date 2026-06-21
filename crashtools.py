@@ -114,6 +114,8 @@ def __lldb_init_module(debugger, internal_dict):
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryVal Val" % __name__)
 	debugger.HandleCommand(
+		"type summary add -F %s.summaryRefCnt RefCnt" % __name__)
+	debugger.HandleCommand(
 		"type synthetic add Val --python-class %s.SyntheticVal" %
 		__name__)
 	if 0:
@@ -998,10 +1000,11 @@ class Target(Util):
 					break
 				# TODO Detect loops
 				self.error.Clear()
-				ra0 = self.check(self.process.ReadPointerFromMemory(
-					ra0, self.error))
-				msg = cs.describePointer(ra0)
+				ra0 = self.process.ReadPointerFromMemory(ra0, self.error)
+				msg = self.error.Fail() and self.error or cs.describePointer(ra0)
 				print("%s %s %s" % (" "*level, xx(ra0), msg))
+				if self.error.Fail():
+					break
 
 	def getAscii(self, pos, size):
 		# ReadCStringFromMemory can't specify the code page
@@ -1670,7 +1673,7 @@ class DataPrintoutContext(Util):
 		reg = self.getRegion(sp)
 		return self.scanForPtrsToType(sp, reg.GetRegionEnd(), typeName)
 
-summaryIsEnoughList = ["UnicodeString", "KString"]
+summaryIsEnoughList = ["UnicodeString", "KString", "RefCnt"]
 
 def unxx(addrt):
 	if "," in addrt:
@@ -2066,6 +2069,14 @@ class SyntheticFsi:
 			GetChildMemberWithName("_ptr").GetValueAsUnsigned()
 		dpc = DataPrintoutContext()
 		return dpc.getValue(pcallee, self.val.GetTarget())
+
+def summaryRefCnt(val, internal_dict):
+	val = val.GetNonSyntheticValue()
+	rcc = val.GetChildAtIndex(0)
+	stdAtomic = rcc.GetChildAtIndex(0)
+	atomicBase = stdAtomic.GetChildAtIndex(0)
+	_M_i = atomicBase.GetChildAtIndex(0)
+	return _M_i.GetValueAsUnsigned()
 
 def summaryVal(val, internal_dict):
 	val = val.GetNonSyntheticValue()

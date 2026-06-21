@@ -1,3 +1,4 @@
+#!/usr/bin/env ansible-playbook
 ---
 
 - name: Some actions to setup workstation
@@ -21,28 +22,34 @@
         # Without backslash: $0 $@ evaluated after alias subst
         alias in0='systemd-inhibit --what=sleep \
         bash -ic "eval \$0 \$@"'
-        alias g3="bash -ecx 'git stash && git pull --rebase --recurse-submodules && git stash apply'"
-        alias d3='docker run --rm -v $(pwd):$(pwd) -w $(pwd)'
+        alias mkiso='bash -ecx "hdiutil makehybrid -o \$(basename \$0) \$0"'
+        alias d3='docker run --rm -v "$(pwd):$(pwd)" -w "$(pwd)"'
         alias d4='d3 -u $(id -u)'
         alias d5='d4 -e "HOME=$(pwd)"'
         alias d3i='inh docker run --rm -v $(pwd):$(pwd) -w$(pwd)'
         alias p3='podman run --rm -v $(pwd):$(pwd) -w $(pwd)'
         alias p4='p3 -u $(id -u)'
         alias p5='p4 -e "HOME=$(pwd)"'
-        vgYtdlFlags="--abort-on-unavailable-fragment --output \
-        \"%(upload_date)s-%(uploader)s-%(title)s-%(id)s.%(ext)s\""
+        vgYtdlFlags="--sub-format srt --sub-lang \".*-orig\" \
+        --abort-on-unavailable-fragment --output \
+        \"%(upload_date)s-%(uploader_id)s-%(title)s-%(id)s.%(ext)s\""
         alias y0="python2 ~/src/youtube-dl/youtube_dl/__main__.py"
         alias yd="y0 $vgYtdlFlags"
         alias iy="inh python2\
         ~/src/youtube-dl/youtube_dl/__main__.py $vgYtdlFlags"
         alias yp='python3 ~/src/yt-dlp/yt_dlp/__main__.py'
         alias y3="yp $vgYtdlFlags"
+        alias f18="y3 -f18"
         alias yp9='python3.9 ~/src/yt-dlp/yt_dlp/__main__.py'
         alias y9="yp9 $vgYtdlFlags"
         alias 12='scl enable gcc-toolset-12 --'
         alias 13='scl enable gcc-toolset-13 --'
         alias m1='zenity --info --text'
         alias š=systemctl
+        # \$0 = evaluated by the root shell
+        # $(whoami) = evaluated after alias expansion
+        alias m2='sudo bash -xec "mkdir -p /Volumes/\$0 && \
+        mount.cifs \$0 /Volumes/\$0 -o intr,uid=$(whoami),sec=krb5"'
       
   - name: gdb options 
     tags: user

@@ -87,6 +87,8 @@
  (interactive)
  (delete-region (point) (progn (forward-word -1) (point))))
 
+(define-key global-map (kbd "C-<wheel-down>") nil)
+(define-key global-map (kbd "C-<wheel-up>") nil)
 (global-set-key [home] 'beginning-of-line)
 (global-set-key [end] 'end-of-line)
 ; Workaround for windows remote terminals
@@ -226,11 +228,11 @@
 ;; TODO Set C-; to dabbrev expand? Bc its near space
 (global-set-key [M-down] 'move-text-down)
 (global-set-key [M-up] 'move-text-up)
-(define-key global-map [s-return]
- (lambda () (interactive) (cycle-spacing -1)))
+(define-key global-map (kbd "M-RET") 
+ (define-key global-map [s-return]
+  (lambda () (interactive) (cycle-spacing -1))))
 ;; A key from ncedit.exe
 (define-key global-map [f4] 'query-replace)
-(define-key global-map (kbd "M-RET") 'dired-find-file-other-window)
 (define-key global-map (kbd "M-q") 'vg-fill-lines-to-end)
 
 (defun vg-trash-buffer-file () (interactive)
@@ -266,6 +268,10 @@
    (grep-apply-setting 'grep-command
 	;; TODO: quote + resolve '~'
 	(format "cd %s && git grep --recurse-submodules -n " root)))
+  (command-execute 'grep)))
+(define-key global-map (kbd "M-s-s")
+ (lambda () (interactive)
+  (grep-apply-setting 'grep-command "git grep --recurse-submodules -n ")
   (command-execute 'grep)))
 (define-key global-map (kbd "s-d") 'vg-goto-git-root)
 (defun vg-goto-git-root () (interactive)
@@ -446,7 +452,9 @@ and starts new compile. Alternatively, start new compile as
 
 (defun Vg-copy () (interactive)
  (if (use-region-p)
-  (command-execute 'copy-region-as-kill)
+  (command-execute
+   (if (equal window-system 'ns)
+	'ns-copy-including-secondary 'copy-region-as-kill))
   (let ((x (find-tag-default)))
    (kill-new x)
    (vg-message "Copied '%s'" x))))
@@ -611,7 +619,7 @@ and starts new compile. Alternatively, start new compile as
  (setq-local search-upper-case nil))
 
 (defun vg-tune-c () (interactive)
-  (setq c-basic-offset 2
+  (setq c-basic-offset 4
 		tab-width 2
 		js-indent-level 2
 		indent-tabs-mode t
@@ -660,7 +668,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'shell-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
- (Vg-classify-as-punctuation "+$/'|")
+ (Vg-classify-as-punctuation "+$/'|\\")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -739,14 +747,32 @@ and starts new compile. Alternatively, start new compile as
    2 3 nil (1)))
 (add-to-list 'compilation-error-regexp-alist-alist
  '(cmake-stack "^  \\(.+\\):\\([1-9][0-9]*\\)" 1 2))
+;; '(cmake-stack " \\([^: \n]+\\):\\([0-9]+\\)" 1 2 nil 1))
 (add-to-list 'compilation-error-regexp-alist-alist
  '(meson-install "^Installing \\(/[^ ]+\\)" 1 nil nil 1))
-(add-to-list 'compilation-error-regexp-alist-alist
- '(valgrind "(\\(.+\\):\\([0-9]+\\))$" 1 2 nil 1))
 
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(meson1 "found at \\(/.+\\)" 1))
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(meson-install "^Installing \\(/[^ ]+\\)" 1 nil nil 1))
+
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(valgrind "(\\([^ ]+\\):\\([0-9]+\\))$" 1 2 nil 1))
+
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(gdb-list-command
+   "^file: \"\\([^\"]+\\)\", line number: \\([0-9]+\\), symbol:"
+   1 2 nil 1))
+
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(git-ls-tree "^[0-9]+ blob [0-9a-f]+\t\\(.*\\)" 1 nil nil 0))
+(add-to-list 'compilation-error-regexp-alist-alist
+ '(git-status "modified:   \\(.*\\)" 1 nil nil 0))
+ 
 (setq compilation-error-regexp-alist
- '(node cmake1 cmake-stack make asan gnu python-tracebacks-and-caml
-   meson1 meson-install bash valgrind)) 
+ '(valgrind cmake1 make asan gnu python-tracebacks-and-caml meson-install bash
+   cmake-stack gdb-list-command git-ls-tree git-status valgrind perl meson1
+   node))
 
 (defun Vg-get-local-search-command (query)
  ;; Need an interface for Spotlight search because the Finder one is no good.
@@ -906,13 +932,15 @@ and starts new compile. Alternatively, start new compile as
   (set-background-color "white")
   (set-foreground-color "black"))
 
-(defun git-log (options) "Print log with options"
- (interactive "sGit log options: ")
- (let* ((bn "*git-log*") proc
-		(cmd (append
-			  (if (equal window-system 'x)
-			   '("systemd-inhibit" "--what=sleep"))
-			  '("git" "log") (split-string options))))
+(defun git-log () "Print log with options" (interactive)
+ (let*
+  ((bn "*git-log*") proc
+   (cmd (read-shell-command "Git log command: " 
+		 (concat
+		  (if (equal window-system 'x)
+		   "systemd-inhibit --what=sleep ")
+		  "git log ")
+		 'compile-history)))
   (require 'vc-git)
   ;; TODO Need new buffer bc old CWD remains 
   (set-buffer (get-buffer-create bn))
@@ -922,7 +950,7 @@ and starts new compile. Alternatively, start new compile as
 	(erase-buffer)
 	(setq vc-log-view-type 'long log-view-vc-backend 'git)
 	(insert (format "--- Running %s...\n" cmd))
-	(setq proc (apply 'start-process bn (current-buffer) cmd))
+	(setq proc (apply 'start-process bn (current-buffer) (split-string cmd)))
 	(vc-git-log-view-mode) ;; <- This sets buffer-read-only
 	(goto-char 1)
 	(pop-to-buffer bn)))
@@ -1084,7 +1112,7 @@ and starts new compile. Alternatively, start new compile as
   (expand-file-name "../lib-src" invocation-directory) invocation-directory))
 (setenv "EDITOR"
  (replace-regexp-in-string "/bin/bin/" "/bin/"
-  (expand-file-name "emacsclient" tools-dir)))
+  (expand-file-name "bin/emacsclient" tools-dir)))
 (setenv "PAGER" "cat")
 (setenv "PATH"
  "/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:$PATH" t)
