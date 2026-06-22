@@ -35,6 +35,11 @@ perf-static: bzip2-1.0.6.m xz.m elfutils.m
 		$(MAKE) O=$O/static.perf V=1 LDFLAGS="-static -L$R/lib"\
 		EXTRA_CFLAGS=-I$R/include
 
+llama.cpp.options = -DBUILD_SHARED_LIBS=OFF -DGGML_CCACHE=OFF -DGGML_CUDA=ON\
+	-DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.2/bin/nvcc\
+	-DCMAKE_INSTALL_RPATH='/usr/local/cuda-12.2/lib64;$$ORIGIN'\
+	-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+
 tigervnc.dnf:
 	 dnf install --setopt=install_weak_deps=False\
 		/usr/include/jpeglib.h /usr/lib64/pkgconfig/pam.pc
