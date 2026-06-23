@@ -3,7 +3,7 @@
 Manipulate kernel scancode translation table or trace USB keyboard events 
 on a GPD Pocket laptop
 
-Using the Japanese key requires the Japanese keyboard fw - download at
+Using the 半/全 key requires the Japanese keyboard fw - download at
 https://mega.nz/#!B3hA0KzQ!Tf2KdyqDH58klad3OjeNjPQ-qe7K_KOHppJV20VK7fQ
 or https://www.gpd.hk/gpdp2firmware . Installer is Windows only. If not
 installed the scancode generated is the same as "`" key

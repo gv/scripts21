@@ -186,7 +186,7 @@ heaptrack.apt:
 
 thunar.n thunar1.n: libxfce4ui.m
 thunar1.n: gtk.m
-thunar%: options = -Dterminal=enabled
+thunar%: options = -Dterminal=disabled -D introspection=false
 thunar1%: cflags = -Werror -fsanitize=address
 vte%: options = -Dgnutls=false -Dvapi=false
 
@@ -263,11 +263,16 @@ hbsamba.options.4.11 = $(hbsamba.source3.options)\
 	--without-gpgme --disable-python\
 	--without-systemd --without-ad-dc --without-json
 
-hbsamba415.options = $(hbsamba.source3.options.common)\
-	--without-gpgme --disable-python\
-	--without-systemd --without-ad-dc --without-json
-
+hbsamba415.options = $(hbsamba.options.4.11)
 hbsamba.options = $(hbsamba.options.4.11)
+
+samba4.options = --without-winbind --without-ads --without-ldap --disable-cups --disable-iprint --without-pam --without-quotas  --without-sendfile-support --without-utmp --disable-avahi --without-acl-support --without-syslog --without-automount --without-dmapi --without-fam --without-libarchive --without-regedit --without-fake-kaserver  --disable-glusterfs --disable-cephfs --disable-spotlight --without-gpgme --disable-python --without-systemd --without-ad-dc --without-json --without-ldb-lmdb --with-winexe --with-system-mitkrb5\
+	CFLAGS=-ZXCVBNM
+
+samba4.dnf:
+	dnf install --setopt=install_weak_deps=False\
+		/usr/lib64/pkgconfig/gnutls.pc perl-Parse-Yapp\
+		mingw64-gcc-c++ /usr/include/krb5.h perl-FindBin
 
 YAPPDIR = $S/Parse-Yapp-1.21
 
@@ -338,6 +343,7 @@ $(AFSCTOOL.Darwin): $(AFSCTOOL.Darwin).c
 	%/configure %/Makefile.in %/Makefile\
 	$R/%.installed.logc $R/%.make.successful.log.txt\
 	$O/$B.%/%.ninja.success.logc $R/%.waf.successful.log.txt\
+	$R/%.wafconf.successful.log.txt\
 	$(AFSCTOOL)
 
 $f $(lldb.t):
@@ -384,12 +390,34 @@ $R/%.installed.logc: $R/%.make.successful.log.txt $(MAKEFILE_LIST) $f
 	(cd $O/$B.$* && $(MAKE) V=1 VERBOSE=1 install) 2>&1 | tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
-$R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
-		$(MAKEFILE_LIST) $f
+# Build dir = -o $S/$B.$* . Apparently not supported in samba
+___$R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
+		$(MAKEFILE_LIST) $R/%.wafconf.successful.log.txt $S/%/Makefile $f
 	mkdir -p $(dir $@)
-	mkdir -p $S/$B.$*
-	cd $S/$B.$* && PATH=$R/bin:$(PATH) $< configure\
-		-t $S/$* --prefix="$R" $($*.options)
+	cd $S/$* && PATH=$R/bin:$(PATH) make 2>&1|\
+		tee $@.tmp && mv -v $@.tmp $@
+
+# Source dir = -t $S/$*
+$R/%.waf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
+		$(MAKEFILE_LIST) $R/%.wafconf.successful.log.txt $f
+	mkdir -p $(dir $@)
+	cd $S/$* &&\
+		PATH=$R/bin:$(PATH) PYTHONHASHSEED=1 WAF_MAKE=1 $< build -v 2>&1|\
+		tee $@.tmp && mv -v $@.tmp $@
+
+$R/%.wafconf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
+		$(MAKEFILE_LIST) $S/%/configure $f
+	mkdir -p $(dir $@)
+	cd $S/$* &&\
+		PATH=$R/bin:$(PATH) CFLAGS=-O2 ./configure $($*.options)\
+		2>&1| tee $@.tmp && mv -v $@.tmp $@
+
+$R/%.wafconf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
+		$(MAKEFILE_LIST) $f
+	mkdir -p $(dir $@) $S/$B.$*
+	PATH=$R/bin:$(PATH) PYTHONHASHSEED=1 $< configure\
+		-t $S/$* --prefix="$R" $($*.options) 2>&1|\
+		tee $@.tmp && mv -v $@.tmp $@
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
