@@ -603,6 +603,7 @@ class Target(Util):
 				"/Applications", self.args.storage, self.error))
 		if self.args.download:
 			self.setVar("target.preload-symbols", "false")
+		self.storagePath = None
 			
 	def load(self, path):
 		self.path = path
@@ -1450,6 +1451,8 @@ USAGE: (--search|--smod=MODNAME|--slim=NUM) CORE PDB1 [PDB2]...")
 					if mo.GetSymbolFileSpec() != mo.file:
 						cmd += " -o 'target symbols add %s'" % (
 							mo.GetSymbolFileSpec().fullpath)
+			if self.args.bt:
+				cmd += " -o bt -o quit"
 			print(cmd)
 		if self.args.download:
 			self.work += t.queueDownloadSymbols(Server(self.args))
@@ -1562,6 +1565,7 @@ class DataPrintoutContext(Util):
 		# Heuristics
 		name = name.split("<")[-1].split(",")[0]
 		name = name.replace("void * ", "")
+		name = name.replace("const ", "")
 		types = self.findTypes1(name)
 		if len(types) == 1:
 			return types
