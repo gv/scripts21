@@ -108,8 +108,6 @@ def __lldb_init_module(debugger, internal_dict):
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.printGtkTree pgt" % __name__)
 	debugger.HandleCommand(
-		"type summary add -F %s.summaryIcu KString" % __name__)
-	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryVal Val" % __name__)
@@ -149,6 +147,15 @@ def find1Type(sbt, name):
 	if (nt := len(types := sbt.FindTypes(name))) != 1:
 		raise Exception("%d types '%s'" % (nt, name))
 	return types.GetTypeAtIndex(0)
+
+def find1stTypeImpl(sbt, name):
+	executable = sbt.modules[0]
+	for i in range(executable.GetNumCompileUnits()):
+		u = executable.GetCompileUnitAtIndex(i)
+		for t in u.GetTypes():
+			print(t.GetName())
+			if t.GetName().startswith(name + "<"):
+				return t
 
 class GtkTree:
 	def __init__(self, sbt):
@@ -1509,12 +1516,22 @@ class DpcError(Exception):
 	pass
 
 class DataPrintoutContext(Util):
-	def __init__(self, sbt=None):
+	def __init__(self, sbt=None, outFile=None):
 		self.error = lldb.SBError()
 		self.valName = None
 		self.filter = self.negFilter = None
 		self.printed = set()
 		self.sbt = sbt
+		self.fp = open(outFile, "w") if outFile else None
+	
+	def out(self, s):
+		print(s)
+		if self.fp:
+			self.fp.write(s + "\n")
+	
+	def closeFile(self):
+		if self.fp:
+			self.fp.close()
 		
 	def detectTypes(self, a0):
 		# print("self.filter=%s" % self.filter)
@@ -1579,7 +1596,7 @@ class DataPrintoutContext(Util):
 	def printValue(self, val, trail):
 		indent=None
 		if len(trail) > 40:
-			print("%s%s level too big" % (len(trail), val.name))
+			self.out("%s%s level too big" % (len(trail), val.name))
 			return
 		type = val.GetType()
 		key = "%s-%s" % (val.GetAddress(), type.name)
@@ -1604,7 +1621,7 @@ class DataPrintoutContext(Util):
 		# Hack: we don't follow pointers but will follow vector elements
 		# if there is a filter just because I need that at the moment
 		if self.filter and name.startswith("std::vector"):
-			0 and print("vector %s nta=%d of %s" % (
+			0 and self.out("vector %s nta=%d of %s" % (
 				name, type.GetNumberOfTemplateArguments(),
 				type.GetTemplateArgumentType(1)))
 			# type.GetTemplateArgumentType() doesn't work on windows
@@ -1624,7 +1641,7 @@ class DataPrintoutContext(Util):
 					num = xx(num)
 				summary = err.fail and ("error: %s" % err) or num
 		if summary:
-			print("\r%s%s%s = %s" % (
+			self.out("\r%s%s%s = %s" % (
 				xx(val.GetAddress().GetLoadAddress(self.sbt)),
 				prefix, name, summary))
 			# Can have summary AND children
@@ -1633,7 +1650,7 @@ class DataPrintoutContext(Util):
 			 not type.name.startswith("char[") and\
 			 not type.name.startswith("char16_t["):
 			if not suppress:
-				print("%s%s has %d children" % (prefix, name, nc))
+				self.out("%s%s has %d children" % (prefix, name, nc))
 			for ii in range(nc):
 				nv = val.GetChildAtIndex(ii)
 				self.printValue(nv, trail)
@@ -1687,33 +1704,51 @@ def printType(debugger, command, result, internal_dict):
 	by vtable. 
 	"""
 	commandArguments = re.split(r"\s+", command)
-	if not (len(commandArguments) in range(1, 5)):
-		print("usage: dt ADDR[-ADDR] [TYPE] [REGEXP] [REGEXP_NEGATIVE]")
+	if len(commandArguments) < 1:
+		print("usage: dt ADDR[-ADDR] [TYPE] [REGEXP] [REGEXP_NEGATIVE] [-f FILE]")
 		return
-	addrt = commandArguments[0]
+	outFile = None
+	args = []
+	i = 0
+	while i < len(commandArguments):
+		arg = commandArguments[i]
+		if arg == "-f":
+			i += 1
+			if i >= len(commandArguments):
+				print("Missing filename for -f")
+				return
+			outFile = commandArguments[i]
+		else:
+			args.append(arg)
+		i += 1
+	if not (len(args) in range(1, 5)):
+		print("usage: dt ADDR[-ADDR] [TYPE] [REGEXP] [REGEXP_NEGATIVE] [-f FILE]")
+		return
+	addrt = args[0]
 	if "-" in addrt:
 		a0, b0 = (unxx(s) for s in addrt.split("-"))
 	else:
 		a0, b0 = unxx(addrt), None
-	dpc = DataPrintoutContext(debugger.GetSelectedTarget())
-	dpc.filter = (len(commandArguments) >= 3) and re.compile(commandArguments[2])
-	dpc.negFilter = (len(commandArguments) >= 4) and\
-		re.compile(commandArguments[3])
-	if len(commandArguments) == 1:
+	dpc = DataPrintoutContext(debugger.GetSelectedTarget(), outFile)
+	dpc.filter = (len(args) >= 3) and re.compile(args[2])
+	dpc.negFilter = (len(args) >= 4) and\
+		re.compile(args[3])
+	if len(args) == 1:
 		typeName = None
 	else:
-		typeName = commandArguments[1]
+		typeName = args[1]
 		if "*" == typeName:
 			typeName = None
 	val = dpc.getValue(a0, typeName)
 	data = val.GetData()
-	print("data=%s" % (data))
+	dpc.out("data=%s" % (data))
 	dpc.printValue(val, [])
 	if b0:
 		tp = val.GetType()
 		for p in range(a0 + tp.size, b0, tp.size):
 			val = dpc.getValue(p, debugger.GetSelectedTarget(), tp.name)
 			dpc.printValue(val, [])
+	dpc.closeFile()
 
 def printTypeOutside(debugger, command, result, internal_dict):
 	"""
@@ -1744,7 +1779,7 @@ def printIcu(debugger, command, result, internal_dict):
 	commandArguments = re.split(r"\s+", command)
 	for arg in commandArguments:
 		err = lldb.SBError()
-		a0 = int(arg, 0)
+		a0 = unxx(arg)
 		us = icu(a0, debugger.GetSelectedTarget().process, err)
 		print(" %s %s" % (xx(a0), err.fail and err or repr(us)))
 
