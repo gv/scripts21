@@ -10,6 +10,7 @@ ovmf=$(dirname "$0")/../src/OVMF.fd0
 flags=
 interface="if=virtio"
 efi="-pflash $ovmf.tmp"
+efi="-drive if=pflash,unit=0,file=$ovmf.tmp,format=raw,readonly=on"
 acc=hvf
 while [ $# != 0 ]; do
   case "$1" in
@@ -55,7 +56,7 @@ while [ $# != 0 ]; do
 	  echo "mount -t 9p -o trans=virtio,version=9p2000.L t1 PATH"
 	  flags="$flags -virtfs local,$1,mount_tag=t1,security_model=none"
 	  ;;
-	+noefi)
+	+noefi|+bios)
 	  efi=
 	  ;;
 	+sd)
@@ -77,21 +78,30 @@ while [ $# != 0 ]; do
   shift
 done
 set -xe
-test -z "$efi" || test -f $ovmf.tmp || cp $ovmf $ovmf.tmp
-stty intr "^]"
+#test -z "$efi" || test -f $ovmf.tmp
+cp $ovmf $ovmf.tmp
+if localIp=$(echo $hfwd|egrep -o 127.[0.]*[0-9]+); then
+  if ! ifconfig lo0 alias "$localIp" up; then 
+	echo "Forwarding to 127.x only supported for VMs running as root"
+	exit 1
+  fi
+  # If I don't need privileged ports thah I probably don't need separate IP
+fi
 caff=$(which caffeinate) ||\
   acc="kvm -cpu host -display gtk,show-cursor=on,zoom-to-fit=on"
-if echo $hfwd|grep 127.0.0.2; then 
-  ifconfig lo0 alias 127.0.0.2 up
-fi
+stty intr "^]"
 nice $caff\
 	 ${QEMU-~/src/build.qemu6/qemu-system-x86_64}\
-	 -m 1.5G\
-	 -machine q35 -accel $acc -smp 2\
+	 -m 2G\
+	 -machine q35\
+	 -display default,show-cursor=on -accel $acc -cpu host -smp 2\
 	 $flags\
 	 -nic user,model=virtio-net-pci$hfwd\
 	 -parallel none\
-	 -no-reboot -no-shutdown\
 	 -device virtio-tablet-pci\
+	 -serial stdio\
 	 $efi "$@"
+# -monitor stdio
+# -no-reboot -no-shutdown
+
 stty intr "^C"
