@@ -668,7 +668,7 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'shell-mode-hook 'tune-dabbrev)
 (add-hook 'makefile-mode-hook 'tune-dabbrev)
 (defun vg-tune-org-mode ()
- (Vg-classify-as-punctuation "+$/'|\\")
+ (Vg-classify-as-punctuation "=+$/'|\\")
  (define-key org-mode-map (kbd "ESC <up>")
   (define-key org-mode-map (kbd "ESC <down>")
    (lambda () (interactive)
@@ -787,13 +787,13 @@ and starts new compile. Alternatively, start new compile as
   (format
    "localsearch search --limit=999 %s" query)))
 
-
+(setq Vg-search-command-history nil)
 (defun tracker-search () (interactive)
  (Vg-reset-dialog 'tracker-search)
  (Vg-start-local-search
   (read-shell-command "Command: "
-   (Vg-get-local-search-command
-	(Vg-current-word-or-selection-quoted)))))
+   (Vg-get-local-search-command (Vg-current-word-or-selection-quoted))
+   'Vg-search-command-history)))
 
 (define-key isearch-mode-map (kbd "s-9") 'Vg-isearch2local)
 (defun Vg-isearch2local () (interactive)
@@ -832,7 +832,8 @@ and starts new compile. Alternatively, start new compile as
 		  "https://packages.debian.org/search?suite=default&section=all&arch=any&searchon=contents&keywords=%s")
 		 (pop-to-buffer (current-buffer)))
 		compilation-finish-functions))))
-	(funcall revert-buffer-function)))))
+	(funcall revert-buffer-function)))
+  (push cmd Vg-search-command-history)))
 
 (defun Vg-ins-search-url (key query template)
  (let ((url (format template (url-hexify-string query))))
