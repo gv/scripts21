@@ -94,11 +94,8 @@ def __lldb_init_module(debugger, internal_dict):
 		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
 		__name__)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.emplSpec0 e0" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printVmPos kp" % __name__)
-	debugger.HandleCommand(
-		"command script add --overwrite -f %s.watchVmPos wkp" % __name__)
+		"command script add --overwrite -f %s.scanHeapForPtr shp" %
+		__name__)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.startRefTracing tref" % __name__)
 	debugger.HandleCommand(
@@ -109,21 +106,37 @@ def __lldb_init_module(debugger, internal_dict):
 		"command script add --overwrite -f %s.printGtkTree pgt" % __name__)
 	debugger.HandleCommand(
 		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
-	debugger.HandleCommand(
-		"type summary add -F %s.summaryVal Val" % __name__)
-	debugger.HandleCommand(
-		"type summary add -F %s.summaryRefCnt RefCnt" % __name__)
-	debugger.HandleCommand(
-		"type synthetic add Val --python-class %s.SyntheticVal" %
-		__name__)
-	if 0:
-		debugger.HandleCommand(
-			"type synthetic add FunStackInfo --python-class %s.SyntheticFsi" %
-			__name__)
-	debugger.HandleCommand(
-		"type synthetic add __VMvars --python-class %s.SyntheticVmv" %
-		__name__)
 	print("%s loaded" % __name__)
+
+class ReinterpretException(Exception): pass
+
+def vecGetVals(dpc, vec, type):
+	if isinstance(vec, lldb.SBValue):
+		vec = vec.GetLoadAddress()
+	ptrs = [dpc.readPtr(vec), dpc.readPtr(vec + ptrSize)]
+	size = ptrs[1] - ptrs[0]
+	if size % type.GetByteSize():
+		raise ReinterpretException(
+			"vector @ %s of size %d can't consist of type %s (%d)" % (
+				xx(vec), size, type.GetName(), type.GetByteSize()))
+	for ind in range(int(size/type.GetByteSize())):
+		val = dpc.sbt.CreateValueFromAddress(
+			"v.%d" % ind,
+			lldb.SBAddress(ptrs[0] + ind * type.GetByteSize(), dpc.sbt),
+			type)
+		val.GetData()
+		if val.error and val.error.Fail():
+			raise ReinterpretException(
+				"vector @ %s of size %d: unable to read [%d] '%s'" % (
+					xx(vec), size, ind, val.error))
+		yield val
+
+def getNamedMember(val, name):
+	cv = val.GetChildMemberWithName(name)
+	if not cv.IsValid():
+		raise Exception("Failed to get member '%s' from '%s' object" % (
+			name, val.GetType().GetName()))
+	return cv
 
 
 def telescope(debugger, command, result, internal_dict):
@@ -1560,7 +1573,7 @@ class DataPrintoutContext(Util):
 			raise DpcError("Head not resolvable %s" % (xx(dest0)))
 		if "~" in name:
 			return self.findTypes1(name.split("~")[0][:-2])
-		name = name.split("::")[0]
+		name = "::".join(name.split("::")[0:-1])
 		types1 = self.findTypes(name)
 		# Heuristics
 		name = name.split("<")[-1].split(",")[0]
@@ -1798,6 +1811,102 @@ def doScanForPtrsToType(debugger, command, result, internal_dict):
 	for val in dpc.scanStackForPtrsToType(
 			dpc.sbt.process.GetSelectedThread(), commandArguments[0]):
 		dpc.printValue(val, [])
+
+def scanHeapForPtr(debugger, command, result, internal_dict):
+	commandArguments = re.split(r"\s+", command)
+	args = []
+	cmd = None
+	i = 0
+	while i < len(commandArguments):
+		if commandArguments[i] == "-c" and i + 1 < len(commandArguments):
+			i += 1
+			cmd = commandArguments[i].replace(",", " ")
+		else:
+			args.append(commandArguments[i])
+		i += 1
+	if not args or not args[0]:
+		print("USAGE: shp PTR_ADDR [-c CMD]")
+		return
+	target = unxx(args[0])
+	sbt = debugger.GetSelectedTarget()
+	process = sbt.process
+	err = lldb.SBError()
+	regs = process.GetMemoryRegions()
+	
+	# Collect stack regions to exclude
+	stackRegions = []
+	for th in process.threads:
+		sp = th.frames[0].sp
+		reg = lldb.SBMemoryRegionInfo()
+		if process.GetMemoryRegionInfo(sp, reg).success and reg.IsMapped():
+			stackRegions.append((reg.GetRegionBase(), reg.GetRegionEnd()))
+	
+	def isStack(addr):
+		for base, end in stackRegions:
+			if base <= addr < end:
+				return True
+		return False
+	
+	totalBytes = 0
+	totalRegions = 0
+	regions = []
+	r = lldb.SBMemoryRegionInfo()
+	for i in range(regs.GetSize()):
+		if not regs.GetMemoryRegionAtIndex(i, r):
+			continue
+		if not r.IsMapped() or not r.IsReadable():
+			continue
+		if r.IsExecutable():
+			continue
+		base = r.GetRegionBase()
+		if isStack(base):
+			continue
+		size = r.GetRegionEnd() - base
+		regions.append((base, r.GetRegionEnd(), size, r.GetName()))
+		totalBytes += size
+		totalRegions += 1
+	
+	print("Heap regions: %d, total: %s bytes" % (totalRegions, nn(totalBytes)))
+	
+	chunkSize = 64 * 1024 * 1024  # 64MB chunks
+	scanned = 0
+	found = 0
+	t0 = time.time()
+	
+	for base, end, size, name in regions:
+		pos = base
+		while pos < end:
+			chunkEnd = min(pos + chunkSize, end)
+			nread = chunkEnd - pos
+			data = process.ReadMemory(pos, nread, err)
+			if err.fail:
+				pos = chunkEnd
+				continue
+			scanned += nread
+			packed = struct.pack("Q", target)
+			p = 0
+			while True:
+				p = data.find(packed, p)
+				if p < 0:
+					break
+				absAddr = pos + p
+				found += 1
+				addrStr = "0x%x" % absAddr
+				print("%s @ %s (region %s)" % (xx(target), addrStr, name or "."))
+				if cmd:
+					debugger.HandleCommand(cmd % addrStr)
+				p += 1
+			elapsed = time.time() - t0
+			perc = 100.0 * scanned / totalBytes if totalBytes else 0
+			speed = scanned / elapsed if elapsed > 0 else 0
+			sys.stderr.write("\r  [%5.1f%%] %s/%s, %s found, %s MB/s   " % (
+				perc, nn(scanned), nn(totalBytes), found,
+				int(speed / (1024*1024))))
+			sys.stderr.flush()
+			pos = chunkEnd
+	
+	elapsed = time.time() - t0
+	print("\nDone: %s bytes, %d found, %.1fs" % (nn(scanned), found, elapsed))
 		
 def summaryIcu(val, internal_dict):
 	rs = icuOrError(val.GetLoadAddress(), val.GetProcess())
@@ -1826,49 +1935,6 @@ class VmPos:
 		self.name = spb.GetChildMemberWithName("name")
 		self.pos = vm.GetChildMemberWithName("ip").GetChildMemberWithName(
 			"pos").GetValueAsUnsigned()
-
-def doPrintVmPos(debugger, commandArguments):
-	if commandArguments[0] and not commandArguments[0] == "*":
-		vm0 = getAddressArg(commandArguments[0])
-	else:
-		vm0 = 0
-	try:
-		vmp = VmPos(
-			DataPrintoutContext(debugger.GetSelectedTarget()), 
-			debugger.GetSelectedTarget().process.GetSelectedThread().frames[0], vm0)
-	except Exception as e:
-		print(e)
-		return
-	if vm0:
-		print("prog=%s(%s) pos=%s" % (vmp.name, vmp.prgID, vmp.pos))
-	else:
-		print("vm=%s prog=%s(%s) pos=%s" % (
-			vmp.vm.GetAddress(), vmp.name, vmp.prgID, vmp.pos))
-		
-def printVmPos(debugger, command, result, internal_dict):
-	commandArguments = re.split(r"\s+", command)
-	if not (len(commandArguments) in [1,2]):
-		print("USAGE: kp [VM_ADDR] [SOURCE_NAME]")
-		return
-	doPrintVmPos(debugger, commandArguments)
-	if len(commandArguments) > 1:
-		for fr in debugger.GetSelectedTarget().process.GetSelectedThread():
-			fp = fr.line_entry.file.basename
-			if fp and commandArguments[1] in fp:
-				print(fr)
-		debugger.HandleCommand("c")
-
-def watchVmPos(debugger, command, result, internal_dict):
-	commandArguments = re.split(r"\s+", command)
-	if len(commandArguments) != 1:
-		print("USAGE: wkp ADDR")
-		return
-	a0 = int(commandArguments[0], 0)
-	sbt = debugger.GetSelectedTarget()
-	e = lldb.SBError()
-	wp = sbt.WatchpointCreateByAddress(a0, ptrSize, lldb.SBWatchpointOptions(), e)
-	check(e)
-	# Can't attach script to WP....
 
 def createBpByNameCheck(sbt, name):
 	bp = sbt.BreakpointCreateByName(name)
@@ -2064,101 +2130,6 @@ def dumpRefTracing(debugger, command, result, internal_dict):
 # Update the functions, keep the data
 if hasattr(lldb, "vgRefTracer"):
 	lldb.vgRefTracer = RefTrace(lldb.vgRefTracer)
-
-class SyntheticVal:
-	def __init__(self, val, internal_dict):
-		self.val = val
-		self.vt = val.GetChildMemberWithName("type").GetValue()
-		
-	def num_children(self, max):
-		if self.vt in ["TYPE_UNDEFINED", "TYPE_NUMBER"]:
-			return 0
-		return 1
-	
-	def get_child_at_index(self, index):
-		# Doesn't work
-		# return self.val.GetValueForExpressionPath(".obj")
-		if "TYPE_LOGICAL" == self.vt:
-			return self.val.GetChildMemberWithName("logical_")
-		if "TYPE_STACK_FUNCT" == self.vt:
-			return self.val.GetChildMemberWithName("funInfo").Dereference()
-		if "TYPE_NUMBER" == self.vt:
-			return self.val.GetChildMemberWithName("value")
-		dpc = DataPrintoutContext(self.val.GetTarget())
-		# objAddr = dpc.check(self.val.GetProcess().ReadPointerFromMemory(
-		#	 self.val.GetLoadAddress() + 8, dpc.error))
-		objAddr = int(self.val.GetChildMemberWithName("value").GetValue())
-		if 0 == objAddr:
-			return 0
-		try:
-			return dpc.getValue(objAddr)
-		except DebuggerError as e:
-			return str(e)
-
-class SyntheticFsi:
-	def __init__(self, val, internal_dict):
-		self.val = val
-	
-	def num_children(self, max):
-		return 1
-	
-	def get_child_at_index(self, index):
-		pcallee = self.val.GetChildMemberWithName("vars").\
-			GetChildMemberWithName("callee").\
-			GetChildMemberWithName("_ptr").GetValueAsUnsigned()
-		dpc = DataPrintoutContext()
-		return dpc.getValue(pcallee, self.val.GetTarget())
-
-def summaryRefCnt(val, internal_dict):
-	val = val.GetNonSyntheticValue()
-	rcc = val.GetChildAtIndex(0)
-	stdAtomic = rcc.GetChildAtIndex(0)
-	atomicBase = stdAtomic.GetChildAtIndex(0)
-	_M_i = atomicBase.GetChildAtIndex(0)
-	return _M_i.GetValueAsUnsigned()
-
-def summaryVal(val, internal_dict):
-	val = val.GetNonSyntheticValue()
-	vt = val.GetChildMemberWithName("type")
-	if vt.GetValue() == "TYPE_NUMBER":
-		vv = val.GetChildMemberWithName("value")
-	else:
-		return "type=%s" % vt.GetValue()
-	return "type=%s v=%s" % (vt.GetValue(), vv.GetValue())
-
-class SyntheticVmv:
-	def __init__(self, val, internal_dict):
-		self.val = val
-	
-	def num_children(self, max):
-		return 1
-	
-	def get_child_at_index(self, index):
-		pcallee = self.val.\
-			GetChildMemberWithName("callee").\
-			GetChildMemberWithName("_ptr").GetValueAsUnsigned()
-		dpc = DataPrintoutContext()
-		dpc.valName = "callee"
-		return dpc.getValue(pcallee, self.val.GetTarget())
-
-def emplSpec0(debugger, command, result, internal_dict):
-	commandArguments = re.split(r"\s+", command)
-	if commandArguments[0]:
-		print("USAGE: e0")
-	dpc = DataPrintoutContext(debugger.GetSelectedTarget()) 
-	for val in dpc.scanStackForPtrsToType(
-			dpc.sbt.process.GetSelectedThread(),
-			["SockObj",  "JsObjImpl<SockObj,SockStreamObj>"]):
-		vec = val.GetChildMemberWithName("input").GetChildMemberWithName("data_")
-		print("vec addr %s" % (xx(vec.GetLoadAddress())))
-		page0Pos = dpc.readPtr(vec.GetLoadAddress())
-		bufPos = dpc.readPtr(page0Pos)
-		bufLen = dpc.readPtr(page0Pos + ptrSize)
-		postData = dpc.check(
-			dpc.sbt.process.ReadMemory(bufPos, bufLen, dpc.error))
-		print("curl -b cookies-htgi-dmz.txt -c cookies-htgi-dmz.txt -vL\\")
-		print("http://htgi.dmz:9999/docs/text --data\\")
-		print("'%s'" % postData.decode())
 
 if __name__ == "__main__":
 	# This makes my Mac (standard LLDB package) segfault 
