@@ -82,30 +82,33 @@ parser.add_argument(
 
 def __lldb_init_module(debugger, internal_dict):
 	"To load: command script import ~/stuff/crashtools.py"
+	# Not sure how to register these when imported from another module
+	name = "lldb.gv_crashtools"
+	lldb.gv_crashtools = sys.modules[__name__]
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printType dt" % __name__)
+		"command script add --overwrite -f %s.printType dt" % name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printTypeFromVbase dtv" % __name__)
+		"command script add --overwrite -f %s.printTypeFromVbase dtv" % name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printTypeOutside pto" % __name__)
+		"command script add --overwrite -f %s.printTypeOutside pto" % name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printIcu icu" % __name__)
+		"command script add --overwrite -f %s.printIcu icu" % name)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.doScanForPtrsToType spt" %
-		__name__)
+		name)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.scanHeapForPtr shp" %
-		__name__)
+		name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.startRefTracing tref" % __name__)
+		"command script add --overwrite -f %s.startRefTracing tref" % name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.dumpRefTracing dref" % __name__)
+		"command script add --overwrite -f %s.dumpRefTracing dref" % name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.telescope xt" % __name__)
+		"command script add --overwrite -f %s.telescope xt" % name)
 	debugger.HandleCommand(
-		"command script add --overwrite -f %s.printGtkTree pgt" % __name__)
+		"command script add --overwrite -f %s.printGtkTree pgt" % name)
 	debugger.HandleCommand(
-		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % __name__)
+		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % name)
 	print("%s loaded" % __name__)
 
 class ReinterpretException(Exception): pass
@@ -158,7 +161,7 @@ def telescope(debugger, command, result, internal_dict):
 
 def find1Type(sbt, name):
 	if (nt := len(types := sbt.FindTypes(name))) != 1:
-		raise Exception("%d types '%s'" % (nt, name))
+		raise DpcError("%d types '%s'" % (nt, name))
 	return types.GetTypeAtIndex(0)
 
 def find1stTypeImpl(sbt, name):
@@ -348,6 +351,9 @@ class Util:
 		if self.error.fail:
 			raise DebuggerError(str(self.error))
 		return result
+
+	def softCheck(self, result):
+		return self.error.fail and self.error or result
 
 	def describeAddr(self, addr):
 		ptr = addr.GetLoadAddress(self.sbt)
@@ -1549,14 +1555,18 @@ class DataPrintoutContext(Util):
 		if self.fp:
 			self.fp.close()
 		
-	def detectTypes(self, a0):
+	def doDetectTypes(self, a0):
 		# print("self.filter=%s" % self.filter)
 		vtb0 = self.check(self.sbt.process.ReadPointerFromMemory(a0, self.error))
 		vtbl = self.sbt.ResolveLoadAddress(vtb0)
-		sc = self.sbt.GetModuleAtIndex(0).ResolveSymbolContextForAddress(
+		sc = self.sbt.ResolveSymbolContextForAddress(
 			vtbl, 255 | lldb.eSymbolContextVariable)
-		0 and print("vtb0=%x sc='%s' cu='%s' %s" % (
-			vtb0, sc, sc.GetCompileUnit(), sc.symbol))
+		0 and print("vtb0=%x sc='%s' cu='%s' s.n='%s'" % (
+			vtb0, sc, sc.GetCompileUnit(), sc.symbol.name))
+		pp = str(sc.symbol.name).split("::`vftable'")
+		if len(pp) > 1:
+			name = pp[0].replace("const ", "")
+			return self.findTypes1(name)
 		pp = str(sc.symbol.name).split(" for ")
 		if (len(pp) > 1):
 			# Heuristic: if we find "vtable for X-in-Y" it's probably Y
@@ -1573,18 +1583,26 @@ class DataPrintoutContext(Util):
 			raise DpcError("Head not resolvable %s" % (xx(dest0)))
 		if "~" in name:
 			return self.findTypes1(name.split("~")[0][:-2])
-		name = "::".join(name.split("::")[0:-1])
+		name = name1 = "::".join(name.split("::")[0:-1])
 		types1 = self.findTypes(name)
 		# Heuristics
 		name = name.split("<")[-1].split(",")[0]
 		name = name.replace("void * ", "")
 		name = name.replace("const ", "")
-		types = self.findTypes1(name)
+		types = self.findTypes(name)
 		if len(types) == 1:
 			return types
 		if len(types1) == 1:
 			return types1
-		raise Exception("No types '%s'" % (typeName))
+		raise DpcError(
+			"%d types '%s' and %d types '%s'" % (
+				len(types), name, len(types1), name1))
+
+	def detectTypes(self, a0):
+		try:
+			return self.doDetectTypes(a0)
+		except DpcError as e:
+			raise DpcError("%s while detecting 0x%x" % (e, a0))
 	
 	def findTypes(self, typeName):
 		# print("'%s' = %d types" % (typeName, sbt.FindTypes(typeName).GetSize()))
