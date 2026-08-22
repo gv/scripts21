@@ -40,6 +40,9 @@ parser.add_argument(
 	"-B", "--bt", action="store_true",
 	help="Print stack of crashed thread")
 parser.add_argument(
+		"--btu", action="store_true",
+		help="Print unique stacks (deduplicated by backtrace)")
+parser.add_argument(
 	"-x", "--thread", action="store_true", 
 	help="Unwind stack by counting PUSH/SUB *,SP instructions in code")
 parser.add_argument(
@@ -82,9 +85,12 @@ parser.add_argument(
 
 def __lldb_init_module(debugger, internal_dict):
 	"To load: command script import ~/stuff/crashtools.py"
-	# Not sure how to register these when imported from another module
+	# Put them in global namespace so they're visible when
+	# imported from another module
 	name = "lldb.gv_crashtools"
 	lldb.gv_crashtools = sys.modules[__name__]
+	debugger.HandleCommand(
+		"command script add -o -p -c %s.PrintUniqueStacks btu" % name)
 	debugger.HandleCommand(
 		"command script add --overwrite -f %s.printType dt" % name)
 	debugger.HandleCommand(
@@ -111,6 +117,11 @@ def __lldb_init_module(debugger, internal_dict):
 		"type summary add -F %s.summaryIcu icu_66::UnicodeString" % name)
 	print("%s loaded" % __name__)
 
+class ArgsForRepl:
+	def __init__(self):
+		self.storage = self.base = None
+		self.download = self.long = False
+		
 class ReinterpretException(Exception): pass
 
 def vecGetVals(dpc, vec, type):
@@ -141,17 +152,12 @@ def getNamedMember(val, name):
 			name, val.GetType().GetName()))
 	return cv
 
-
 def telescope(debugger, command, result, internal_dict):
 	cmdl = re.split(r"\s+", command)
 	if len(cmdl) > 2:
 		print("USAGE: xt [START [END]]")
 		return
-	class NoArgs:
-		def __init__(self):
-			self.storage = None
-			self.download = self.long = False
-	tg = Target(NoArgs(), debugger, debugger.GetSelectedTarget())
+	tg = Target(ArgsForRepl(), debugger, debugger.GetSelectedTarget())
 	tg.process = tg.sbt.process
 	th = tg.process.GetSelectedThread()
 	start = cmdl[0] and unxx(cmdl[0]) or th.frames[0].sp
@@ -220,7 +226,7 @@ except ImportError:
 		sys.path.append("\
 /Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/\
 Resources/Python")
-import lldb
+import lldb, lldb.plugins.parsed_cmd 
 
 def check(error):
 	if error.fail:
@@ -233,7 +239,6 @@ def getIdFromModSpec(ms):
 	uuid = ctypes.string_at(int(ms.GetUUIDBytes()), ms.GetUUIDLength())
 	return uuid.hex().upper()
 	
-
 def getId(m, long=False):
 	s = m.GetUUIDString()
 	if not s:
@@ -264,6 +269,10 @@ def xr(start, end):
 				break
 			prefix += sx[p]
 	return "%s[%s-%s]" % (prefix, sx[len(prefix):], ex[len(prefix):])
+
+def splitPath(path):
+	"Support all path separators"
+	return re.split(r"[\\/]+", path)
 
 def hexDumpMem(process, start, end, error):
 	lsize = 16
@@ -308,6 +317,19 @@ def abbreviate_identifiers(code: str) -> str:
 	return identifier_pattern.sub(replacer, code)
 
 ptrSize = 8
+
+class PrintUniqueStacks(lldb.plugins.parsed_cmd.ParsedCommand):
+	def setup_command_definition(self):
+		pass
+
+	def get_short_help(self):
+		return "Print unique stacks (deduplicated by backtrace)"
+
+	def __call__(self, debugger, args, exe_ctx, result):
+		tg = Target(ArgsForRepl(), debugger, debugger.GetSelectedTarget())
+		tg.process = tg.sbt.process
+		tg.printUniqueCallchains()
+		print("")
 
 class Count:
 	def __init__(self):
@@ -367,7 +389,13 @@ class Util:
 	def readPtr(self, ptr):
 		return self.check(
 			self.sbt.process.ReadPointerFromMemory(ptr, self.error))
-		
+
+	def getNamedIcu(self, val, name):
+		return self.softCheck(icu(
+			getNamedMember(val, name).GetLoadAddress(),
+			self.sbt.process, self.error))
+
+
 class SymbolNotOnServer(Exception):
 	pass
 
@@ -778,7 +806,7 @@ class Target(Util):
 		if self.storagePath and\
 			 m.file.fullpath.startswith(self.storagePath):
 			return self.storageShort + m.file.fullpath[len(self.storagePath):]
-		parts = m.file.fullpath.split(os.sep)
+		parts = splitPath(m.file.fullpath)
 		if len(parts) <= 1:
 			return m.file.fullpath
 		return "/%s/.../%s" % (parts[1], parts[-1])
@@ -801,7 +829,7 @@ class Target(Util):
 		if not f.line_entry.IsValid():
 			return " "
 		cwd = os.getcwd().split(os.sep)[-1]
-		parts = f.line_entry.file.fullpath.split(os.sep)
+		parts = splitPath(f.line_entry.file.fullpath)
 		try:
 			path = os.sep.join(parts[parts.index(cwd) + 1:])
 		except ValueError:
@@ -814,15 +842,18 @@ class Target(Util):
 		return self.getPossibleSourceLines2(
 			addr.line_entry.file, addr.line_entry.line, template)
 
-	def getPossibleSourceLines2(self, filespec, lineNumber, template):
+	def getRelativePath(self, path):
 		cwd = os.getcwd().split(os.sep)[-1]
-		parts = filespec.fullpath.split(os.sep)[::-1]
+		parts = splitPath(path)[::-1]
 		bases = [cwd]
 		if self.args.base:
 			bases += self.args.base.split(",")
 		from itertools import takewhile
-		path = os.sep.join(
+		return os.sep.join(
 			list(takewhile(lambda x: x not in bases, parts))[::-1])
+
+	def getPossibleSourceLines2(self, filespec, lineNumber, template):
+		path = self.getRelativePath(filespec.fullpath)
 		if path == filespec.fullpath:
 			found = 0
 			if 0:
@@ -859,6 +890,29 @@ class Target(Util):
 			t.GetStopDescription(80)))
 		return reg
 		
+	def printUniqueCallchains(self):
+		from collections import defaultdict
+		stacks = defaultdict(list)
+		for th in self.process.threads:
+			key = []
+			for f in th.frames:
+				fn = f.GetFunctionName()
+				mod = f.addr.module.IsValid() and self.getName(f.addr.module) or "-"
+				src = ""
+				if f.line_entry.IsValid():
+					src = " %s:%d" % (
+						self.getRelativePath(f.line_entry.file.fullpath), f.line_entry.line)
+				key.append("%s %s%s" % (fn, mod, src))
+			stacks[tuple(key)].append(th)
+		for stack, threads in sorted(stacks.items(), key=lambda x: -len(x[1])):
+			print("--- %d thread(s) ---" % len(threads))
+			for th in threads:
+				desc = th.GetStopDescription(80)
+				print("  Thread %d: %s" % (th.idx, desc))
+			for frame in stack:
+				print("  %s" % frame)
+			print("")
+
 	def printDecodedFrames(self, t):
 		self.prevVals = {}
 		reg = self.printStackInfo(t)
@@ -1472,6 +1526,9 @@ USAGE: (--search|--smod=MODNAME|--slim=NUM) CORE PDB1 [PDB2]...")
 							mo.GetSymbolFileSpec().fullpath)
 			if self.args.bt:
 				cmd += " -o bt -o quit"
+			elif self.args.btu:
+				cmd += " -o  'command script import %s' -o btu -o quit" % (
+					__file__)
 			print(cmd)
 		if self.args.download:
 			self.work += t.queueDownloadSymbols(Server(self.args))
@@ -1485,6 +1542,8 @@ USAGE: (--search|--smod=MODNAME|--slim=NUM) CORE PDB1 [PDB2]...")
 			t.printStacks()
 		elif self.args.bt:
 			t.doCmd("bt")
+		elif self.args.btu:
+			t.printUniqueCallchains()
 		elif self.args.threadf:
 			t.printDecodedFrames(t.process.selected_thread)
 		elif self.args.modules or self.args.sections or self.args.absent:
