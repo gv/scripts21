@@ -166,6 +166,7 @@
 (define-key global-map [M-prior] 'pop-tag-mark)
 (define-key global-map [C-insert] 'Vg-copy)
 (define-key global-map (kbd "s-c") 'Vg-copy)
+(define-key global-map (kbd "M-s-c") 'vg-copy-file-path)
 (define-key global-map (kbd "s-v") 'cua-paste)
 ;; End of code navigation
 
@@ -459,7 +460,12 @@ and starts new compile. Alternatively, start new compile as
    (kill-new x)
    (vg-message "Copied '%s'" x))))
 
- (defun google-at-point () (interactive)
+(defun vg-copy-file-path () (interactive)
+ (let ((x (or buffer-file-name default-directory)))
+  (kill-new x)
+  (vg-message "Copied '%s'" x)))
+
+(defun google-at-point () (interactive)
  (Vg-search-at-point "https://www.google.com/search?q=%s"))
 
 (define-key global-map [f4]
@@ -619,7 +625,7 @@ and starts new compile. Alternatively, start new compile as
  (setq-local search-upper-case nil))
 
 (defun vg-tune-c () (interactive)
-  (setq c-basic-offset 4
+  (setq c-basic-offset 2
 		tab-width 2
 		js-indent-level 2
 		indent-tabs-mode t
@@ -731,7 +737,7 @@ and starts new compile. Alternatively, start new compile as
 (require 'compile)
 (add-to-list 'compilation-error-regexp-alist-alist
 ;; sub1 = file, sub2 = line, no column, type = warning
- '(asan " \\([./][^:\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
+ '(asan " \\([./][^ :\n]+\\):\\([0-9]+\\)" 1 2 nil 1))
 ;; Same as asan but in parentheses
 (add-to-list 'compilation-error-regexp-alist-alist
  '(node "(\\(/[^:\n]+\\):\\([0-9]+\\)" 1 2))
@@ -746,7 +752,7 @@ and starts new compile. Alternatively, start new compile as
    "^CMake \\(?:Error\\|\\(Warning\\)\\) at \\(.+\\):\\([1-9][0-9]*\\)"
    2 3 nil (1)))
 (add-to-list 'compilation-error-regexp-alist-alist
- '(cmake-stack "^  \\(.+\\):\\([1-9][0-9]*\\)" 1 2))
+ '(cmake-stack "^  \\([^ ]+\\):\\([1-9][0-9]*\\)" 1 2))
 ;; '(cmake-stack " \\([^: \n]+\\):\\([0-9]+\\)" 1 2 nil 1))
 (add-to-list 'compilation-error-regexp-alist-alist
  '(meson-install "^Installing \\(/[^ ]+\\)" 1 nil nil 1))
@@ -770,9 +776,10 @@ and starts new compile. Alternatively, start new compile as
  '(git-status "modified:   \\(.*\\)" 1 nil nil 0))
  
 (setq compilation-error-regexp-alist
- '(valgrind cmake1 make asan gnu python-tracebacks-and-caml meson-install bash
-   cmake-stack gdb-list-command git-ls-tree git-status valgrind perl meson1
-   node))
+ '(asan valgrind cmake1 make python-tracebacks-and-caml meson-install 
+   cmake-stack gdb-list-command git-ls-tree git-status valgrind meson1
+   node gnu))
+;; perl bash
 
 (defun Vg-get-local-search-command (query)
  ;; Need an interface for Spotlight search because the Finder one is no good.
@@ -842,10 +849,12 @@ and starts new compile. Alternatively, start new compile as
    (lambda () (interactive) (Vg-open-browser url)))))
 
 (defun vg-local-search () (interactive)
- (Vg-start-local-search
-  (Vg-get-local-search-command
-   (if (use-region-p) (Vg-current-word-or-selection)
-	(Vg-get-query-from-current-line)))))
+ (let ((q (if (use-region-p) (Vg-current-word-or-selection)
+		   (Vg-get-query-from-current-line))))
+  (if (= 0 (length q))
+   (vg-message "Nothing selected and no word under cursor")
+   (Vg-start-local-search
+	(Vg-get-local-search-command q)))))
 (define-key global-map (kbd "s-9") 'vg-local-search)
  
 (defmacro Vg-open-url (&rest body)
@@ -903,8 +912,10 @@ and starts new compile. Alternatively, start new compile as
 (add-hook 'find-file-hook 'vg-file-open)
 
 ; Set file types.
-(add-to-list 'auto-mode-alist '("\\.ks\\'" . javascript-mode))
+(add-to-list 'auto-mode-alist '("\\.ks\\'" . js-mode))
+(add-to-list 'auto-mode-alist '("\\.jsonc?\\'" . js-mode))
 (add-to-list 'auto-mode-alist '("\\.cs\\'" . java-mode))
+(add-to-list 'auto-mode-alist '("\\.kt\\'" . java-mode))
 (add-to-list 'auto-mode-alist '("\\.h\\'" . c++-mode))
 (add-to-list 'auto-mode-alist '("\\.js\\'" . javascript-mode))
 (add-to-list 'auto-mode-alist '("\\.gyp\\'". javascript-mode))
@@ -1162,6 +1173,7 @@ and starts new compile. Alternatively, start new compile as
 (grep-apply-setting 'grep-use-null-device nil)
 (setq sh-basic-offset 2)
 (setq compilation-skip-threshold 2)
+(setq compilation-context-lines t)
 (setq recentf-max-saved-items 1024)
 (setq which-func-format
   `("["
