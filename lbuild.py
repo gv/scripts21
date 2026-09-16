@@ -19,6 +19,8 @@ parser.add_argument(
 parser.add_argument(
 	"--lid", action="store_true",
 	help="Don't inhibit systemd lid switch handler")
+parser.add_argument(
+	"--base", "-b", help="Rewrite paths from stdin to given directory")
 parser.add_argument("--codeql", "-q", help="Run codeql")
 parser.add_argument("--alert", "-a", action="store_true")
 parser.add_argument("POSITIONAL", nargs="*")
@@ -87,6 +89,17 @@ class Input:
 		if name == "dir":
 			return os.getcwd()
 
+	def rebasePath(self, m):
+		base = os.path.basename(self.paths.absBase)
+		path, nl = m.groups()
+		path = path.replace("\\", "/").split("/")
+		try:
+			path = path[path.index(base) + 1:]
+			return os.path.join(self.paths.absBase, "/".join(path)) + ":" + nl
+		except ValueError:
+			pass
+		return "/".join(path) + ":" + nl
+
 	def add(self, line, log):
 		self.lines.size += 1
 		if hasattr(line, "decode"):
@@ -94,13 +107,8 @@ class Input:
 		# Remove coloring
 		line = re.sub(r"(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]", "", line)
 		# Windows paths must be converted before putting into _b.log
-		m = re.match(r"\s*([\w:\\._-]+)([(]\d+[)]:.+)", line)
-		if m:
-			path, rest = m.groups()
-			if path.lower().startswith(self.paths.absBase.lower()):
-				path = path[len(self.paths.absBase) + 1:]
-			path = path.replace("\\", "/")
-			line = path + rest
+		line = re.sub(r"\s*([\w:\\._-]+)[(](\d+)[)]", self.rebasePath, line)
+		line = re.sub(r"[[]([\w:\\._-]+) @ (\d+)", self.rebasePath, line)
 		line = line.replace("\r", "")
 		leftLocation = re.match(r"([/\w.]+:\d+)(.+)", line)
 		leftToRight = False
@@ -149,6 +157,8 @@ class Input:
 					sys.stdout.write("\r")
 					self.add(acc, out)
 					break
+				if hasattr(r, "encode"):
+					r = r.encode()
 				acc += r
 				lines = acc.split(b"\n")
 				acc = lines.pop()
@@ -365,6 +375,7 @@ class BuildLogTool:
 	def __init__(self, args):
 		self.args = args
 		self.output = None
+		self.flags = None
 		
 	def reportCounts(self, counts):
 		for count in counts:
@@ -372,13 +383,18 @@ class BuildLogTool:
 			if self.output:
 				self.output.write(" %16s %s\n" % (
 					nn(count.size), count.name))
+
+	def getConf(self, name, default=""):
+		return ""
 				
 	def run(self):
 		# Inputs are log files
-		bl = Input(args, Paths(self, os.getcwd(), self.args))
-		bl.verbose = None
+		bl = Input(args, Paths(self, self.args.base or os.getcwd(), self.args))
 		for path in self.args.POSITIONAL:
 			bl.read(open(path, "r"), None)
+		if not self.args.POSITIONAL:
+			bl.verbose = sys.stdout
+			bl.read(sys.stdin, None)
 		if self.args.codeql:
 			codeql = os.path.expanduser("~/codeql/codeql")
 			extrLog = Input(args, bl.paths)
