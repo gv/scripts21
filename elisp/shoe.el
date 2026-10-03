@@ -183,9 +183,6 @@
   (vg-message "Rectangle mark disabled")))
 (define-key global-map (kbd "s-b") 'end-of-buffer)
 (define-key global-map (kbd "C-b") 'end-of-buffer)
-(define-key global-map [f7] 'google-line)
-(define-key global-map [f9] 'gscholar-line)
-(define-key global-map [f12] 'vg-gh-search-line)
 ;; Adjacent built-in bindings on Mac:
 ;; s-n = New window, s-m = Minimize, s-u = Revert, s-k = Close file 
 (define-key global-map (kbd "s-o") 'find-file)
@@ -457,24 +454,15 @@ and starts new compile. Alternatively, start new compile as
    (if (equal window-system 'ns)
 	'ns-copy-including-secondary 'copy-region-as-kill))
   (let ((x (find-tag-default)))
-   (kill-new x)
-   (vg-message "Copied '%s'" x))))
+   (if (not x)
+	(vg-message "Nothing selected and no word under cursor")
+	(kill-new x)
+	(vg-message "Copied '%s'" x)))))
 
 (defun vg-copy-file-path () (interactive)
  (let ((x (or buffer-file-name default-directory)))
   (kill-new x)
   (vg-message "Copied '%s'" x)))
-
-(defun google-at-point () (interactive)
- (Vg-search-at-point "https://www.google.com/search?q=%s"))
-
-(define-key global-map [f4]
- (lambda () (interactive)
-  (Vg-search-current-line
-   "https://www.youtube.com/results?search_query=%s"
-   " -\"hey delphi\"\
-  -\"Roel Van de Paar\" -iluvatar1 -\"A To Z Hacks\" -\"Quick Notepad\
-  Tutorial\" -\"Luke Chaffey\" -\"News Source Crawler\"")))
 
 (define-key global-map [s-f4]
  (lambda () (interactive)
@@ -488,9 +476,6 @@ and starts new compile. Alternatively, start new compile as
    (Vg-open-browser (format tmpl q))
    (vg-message "No current word or selection")))) 
 
-(defun google-line () (interactive)
- (Vg-search-current-line "https://www.google.com/search?q=%s"))
-
 (defun Vg-get-query-from-current-line ()
  (string-trim (replace-regexp-in-string "[[] []]\\|Q:" ""
   (Vg-get-current-line-escaped))))
@@ -503,12 +488,6 @@ and starts new compile. Alternatively, start new compile as
 	(url-hexify-string
 	 (string-trim
 	  (concat (Vg-get-query-from-current-line) suffix)))))))
-
-(defun gscholar-line () (interactive)
- (Vg-search-current-line "https://scholar.google.com/scholar?q=%s"))
-
-(defun vg-gh-search-line () (interactive)
- (Vg-search-current-line "https://github.com/search?q=%s&type=code"))
 
 (defun Vg-open-browser (url)
  (if (equal window-system 'ns)
@@ -826,8 +805,11 @@ and starts new compile. Alternatively, start new compile as
 		 (insert "\nSearch URLs:\n\n")
 		 (Vg-ins-search-url "s" query
 		  "https://www.google.com/search?q=%s")
+		 (Vg-ins-search-url "c" query
+		  "https://scholar.google.com/scholar?q=%s")
 		 (Vg-ins-search-url "u"
-		  (concat query " -\"hey delphi\" -\"Roel Van de Paar\" -vlogize")
+		  (concat query
+		   " -\"hey delphi\" -\"Roel Van de Paar\" -vlogize")
 		  "https://www.youtube.com/results?search_query=%s&sp=CAI%%253D")
 		 (Vg-ins-search-url "h" noquotes-query
 		  "https://github.com/search?q=%s&type=code")
@@ -1120,11 +1102,12 @@ and starts new compile. Alternatively, start new compile as
 
 (server-start)
 (setq tools-dir
- (if (string-match "/src/" invocation-directory)
-  (expand-file-name "../lib-src" invocation-directory) invocation-directory))
+ (expand-file-name
+  (if (string-match "/src/" invocation-directory) "../lib-src" "bin")
+  invocation-directory))
 (setenv "EDITOR"
  (replace-regexp-in-string "/bin/bin/" "/bin/"
-  (expand-file-name "bin/emacsclient" tools-dir)))
+  (expand-file-name "emacsclient" tools-dir)))
 (setenv "PAGER" "cat")
 (setenv "PATH"
  "/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:$PATH" t)
