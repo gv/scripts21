@@ -408,6 +408,7 @@ class Input:
 			u = self.module.GetCompileUnitAtIndex(i)
 			sys.stdout.write("\rCU %d/%d..." % (
 				i, self.module.GetNumCompileUnits()))
+			# print("%d %s" % (len(u.GetTypes()), u.GetFileSpec()))
 			sys.stdout.flush()
 			for t in u.GetTypes():
 				if t.IsPointerType() or t.IsReferenceType() or t.size == 0:
@@ -424,6 +425,8 @@ class Input:
 					if len(dp) > 1:
 						self.printOneType(t, printed, dps=dp)
 					continue
+				if not strings:
+					self.printOneType(t, printed, needFields=True)
 				for st in strings:
 					found = st in t.name
 					if found:

@@ -8,7 +8,7 @@ list() {
 	git ls-files --recurse-submodules\
 		"*.cc" "*.cpp" "*.[chsm]" "*.java" "*.php" "*.py" "*.ks"\
 		"*.rb" "*.in" "*.tcl" "*.sh" "*.cxx" "*.hxx" "*.inc" "*.js"\
-		"*.rs" "*.pl"
+		"*.rs" "*.pl" "*"
   else
 	# Doesn't work bc `*` is substituted too soon
 	#
@@ -27,7 +27,7 @@ etags=$here/build.ctags/etags
 roptc=--regex-c++
 roptj=--regex-javascript
 # global_opts=--guess-language-eagerly
-global_opts="--langmap=JavaScript:.js.jsx.mjs.ks"
+global_opts="--langmap=JavaScript:.js.jsx.mjs.ks --alias-Sh=default"
 if ! [ -f "$etags" ]; then
   etags=etags
   roptc=--regex
@@ -46,7 +46,9 @@ list "$@"| egrep -v $tests|\
 	   $roptc='/.*[. ]\(\w+\) = function/\1/'\
 	   $roptc='/.*\(\w+\) *: function/\1/'
 # Add only file paths for tests (might be empty)
-list "$@"| egrep $tests| time nice xargs -n999 -t $etags -a --language=none || true
+# Universal ctags don't support --language=none
+list "$@"| egrep $tests|\
+  time nice xargs -n999 -t printf '%s,0\n\f\n' >> TAGS || true
 # "$here/../tools/afsctool/afsctool" -cvvv TAGS
 # xz doesn't work on Mac. Also, mb better results:
 #  -rw-r--r--    1 vg  staff   347K Mar 25 22:12 TAGS.bz2

@@ -905,6 +905,7 @@ and starts new compile. Alternatively, start new compile as
 (add-to-list 'auto-mode-alist '("Makefile" . makefile-mode))
 (add-to-list 'auto-mode-alist '("\\.md\\.txt\\'" . markdown-mode))
 (add-to-list 'auto-mode-alist '("\\.logc\\'" . compilation-mode))
+(add-to-list 'auto-mode-alist '("\\.rs\\'" . rust-mode))
 (make-face-bold 'font-lock-keyword-face)
 (make-face-italic 'font-lock-string-face)
 (which-function-mode 1)

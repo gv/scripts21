@@ -8,7 +8,7 @@ S := $(SRC)
 SHELL=/bin/bash -o pipefail
 _MAKEFLAGS = -Rr
 platform = $(shell uname -s)
-B = $(platform:Darwin=build)$(cf)$(vgccversion)
+B = $(platform)$(cf)$(vgccversion)
 tools0 = $(platform:Darwin=/win/tools:/Volumes/cmake-3.28.3-macos10.10-universal/CMake.app/Contents/bin:)
 tools = $(tools0:Linux=)
 cflags_global = $(cf:-a=-fsanitize=address)
@@ -51,15 +51,6 @@ binutils-gdb.options = --disable-gold --enable-targets=all\
 	CFLAGS="-g -O2 -Wno-error=cast-function-type -Wno-error=stringop-truncation\
 		-Wno-error=format-truncation -Wno-error=format-overflow"
 binutils-gdb.envvars = MAKEINFO=:
-
-qemu.envvars.Darwin = PKG_CONFIG=$R/bin/pkg-config
-qemu6.envvars.Darwin = $(qemu.envvars.Darwin)
-qemu%: options = --target-list=x86_64-softmmu --disable-docs\
-	--disable-guest-agent --disable-curl\
-	--enable-slirp
-# --enable-virtfs works only on Linux
-qemu%: options.Linux = --enable-gtk
-qemu%: options.Darwin = --disable-live-block-migration 
 
 pkg-config.options = --with-internal-glib
 swig.options += -D WITH_PCRE=OFF
@@ -163,20 +154,32 @@ new-emacs.n: new-fake-manuals
 	echo "Fake" > $*emacs/info/emacs
 	echo "Fake" > $*emacs/info/emacs.info
 
-noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
 
-# qemu must skip meson.build
-qemu8.n_: qemu8.m_
-qemu%.n_: qemu%.m_
-aqemu.make: pkg-config.install_ glib.install_ pixman.install_
+qemu%: options = --target-list=x86_64-softmmu --disable-docs\
+	--disable-guest-agent --enable-curl\
+	--enable-slirp
+# --enable-virtfs works only on Linux
+qemu%: options.Linux = --enable-gtk
+qemu%: envvars.Darwin = PKG_CONFIG=$R/bin/pkg-config
+qemu8%: options.Darwin = --disable-live-block-migration 
+
+macos-libcurl:
+	echo "Name: libcurl" > $R/lib/pkgconfig/libcurl.pc
+	echo "Description: Library to transfer ..." >> $R/lib/pkgconfig/libcurl.pc
+	echo "Version: 7.54.0" >> $R/lib/pkgconfig/libcurl.pc
+	echo "Libs: -lcurl" >> $R/lib/pkgconfig/libcurl.pc
+
+noinstall.qemu make.qemu qemu6.n: pkg-config.m glib.m pixman.m
+glib.m: pcre2.m
+glib%: envvars.Darwin=PKG_CONFIG=$R/bin/pkg-config
+libslirp%: envvars.Darwin=PKG_CONFIG=$R/bin/pkg-config
+
 
 lldb.Darwin.deps = swig.m libedit.m
 lldb.n: $(lldb.$(platform).deps) clang.m
 lldb.apt:
 	apt install --no-install-recommends libedit-dev swig
 clang.m: llvm.m
-
-aqemu.make: pkg-config.install_ glib.install_ pixman.install_
 
 heaptrack.apt:
 	apt install -y libunwind-dev libdw-dev libboost-dev\
@@ -421,7 +424,7 @@ $R/%.wafconf.successful.log.txt: $S/%/*/bin/waf $S/%/wscript\
 
 $R/%.make.successful.log.txt: $O/$B.%/Makefile $(MAKEFILE_LIST) $f
 	mkdir -p $(dir $@)
-	(cd $O/$B.$* && $(MAKE) -w V=1 VERBOSE=1 $($*.overrides) --trace) 2>&1 |\
+	(cd $O/$B.$* && $(MAKE) -w V=1 VERBOSE=1 $($*.overrides)) 2>&1 |\
 		tee -a $@.tmp.txt
 	mv -v $@.tmp.txt $@
 
@@ -429,10 +432,11 @@ $O/$B.%/Makefile: $S/%/configure $(MAKEFILE_LIST) $(deps)
 	chmod +x $(dir $<)/configure
 	mkdir -p $(dir $@)
 	cd $(dir $@) &&\
-		$($*.envvars) PATH=$(tools)$R/bin:$(PATH)\
-			$(dir $<)/configure $(options) $(options.$(platform))\
-			$($*.options) $($*.options.$(platform)) --prefix="$R" 2>&1|\
-			tee _configure.log\
+		$($*.envvars) $($*.envvars.$(platform)) $(envvars.$(platform))
+		PATH=$(tools)$R/bin:$(PATH)\
+		$(dir $<)/configure $(options) $(options.$(platform))\
+		$($*.options) $($*.options.$(platform)) --prefix="$R" 2>&1|\
+		tee _configure.log\
 
 CAFF = $(shell which caffeinate)
 $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
@@ -441,17 +445,26 @@ $O/$B.%/%.ninja.success.logc: $O/$B.%/build.ninja $(AFSCTOOL)\
 	(cd $O/$B.$* &&\
 		echo "vg: Entering directory '$$(pwd)'" &&\
 		PATH=$(tools)$(PATH)\
-		$(CAFF) nice ninja $($*.t) -d explain -vj3 ) 2>&1 |\
+		$(CAFF) nice ninja $($*.t) -d explain -vj3 &&\
+		echo "vg: Leaving directory '$$(pwd)'") 2>&1 |\
 		tee $@.tmp.txt
 	$(COMPRESS_AND) echo $^ is up to date	
 	mv -v $@.tmp.txt $@
+
+# qemu: have both configure and meson.build, need to run configure
+$O/$B.%/build.ninja: $S/%/configure $S/%/meson.build $(MAKEFILE_LIST) $f
+	mkdir -p $O/$B.$*
+	@echo "vg: Entering directory '$O/$B.$*'"
+	cd $O/$B.$* && PATH=$S:$(PATH) $(envvars.$(platform)) $^\
+		$(options) $(options.$(platform)) 2>&1|\
+		tee _configure.log
 
 $O/$B.%/build.ninja: $S/%/meson.build $S/%/meson/meson.py\
 	$(MAKEFILE_LIST)
 	mkdir -p $O/$B.$*
 	cd $O/$B.$* &&\
-		$($*.envvars) python3 $S/$*/meson/meson.py --prefix="$R"\
-		$($*.options) $(options) $S/$*
+		$($*.envvars) $($*.envvars.$(platform)) python3 $S/$*/meson/meson.py\
+		--prefix="$R" $($*.options) $(options) $S/$*
 
 $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)\
 		$f
@@ -461,14 +474,14 @@ $O/$B.%/build.ninja: $S/%/meson.build $(MAKEFILE_LIST) $(DISABLE_MESON)\
 # error to pass that when there are none.
 # TODO Change in $(options) doesn't work now
 	test -f $@ ||\
-		$($*.envvars) $(envvars)\
+		$($*.envvars) $(envvars) $(envvars.$(platform))\
 		PATH=$(tools)$(PATH)\
 		CFLAGS="-I$R/include $(cflags_global) $(cflags)" python3\
 		$S/meson/meson.py setup\
 		--prefix="$R" $($*.options) $(options) $O/$B.$* $S/$* 2>&1|\
 		tee $O/$B.$*/meson_.log
 
-$O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
+$O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST) /usr/bin/ninja
 	mkdir -p $O/$B.$*
 	@echo "vg: Entering directory '$(HERE)/$*'"
 #		--trace
@@ -483,6 +496,24 @@ $O/$B.%/build.ninja: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
 		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
 		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G Ninja $($*.options)\
 		-S $(HERE)/$* -B $O/$B.$* 2>&1| tee _cmake.log
+	@echo "vg: Leaving directory '$(HERE)/$*'"
+
+$O/$B.%/Makefile: $S/%/CMakeLists.txt $(MAKEFILE_LIST)
+	mkdir -p $O/$B.$*
+	@echo "vg: Entering directory '$(HERE)/$*'"
+#		--trace
+#		--debug-find-pkg=LLVM
+#		--debug-find
+	$($*.envvars) PATH=$(tools)$(PATH) CMAKE_INSTALL_MODE=SYMLINK cmake\
+		-DCMAKE_PREFIX_PATH="$R"\
+		-DCMAKE_INSTALL_PREFIX="$R"\
+		-DCMAKE_C_FLAGS="-I$R/include"\
+		-DCMAKE_CXX_FLAGS="-I$R/include"\
+		-DCMAKE_MODULE_PATH="$R/lib/cmake/llvm:$R/lib/cmake/clang"\
+		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES -D BUILD_TESTING=0\
+		-D CMAKE_BUILD_TYPE=RelWithDebInfo -G "Unix Makefiles" $($*.options)\
+		-S $(HERE)/$* -B $O/$B.$* 2>&1| tee _cmake.log
+	@echo "vg: Leaving directory '$(HERE)/$*'"
 
 %.makefile_in_src: %/Makefile
 	cd $(dir $^) && make --trace

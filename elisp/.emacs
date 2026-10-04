@@ -17,7 +17,28 @@
  ;; If there is more than one, they won't work right.
  '(safe-local-variable-values
    (quote
-	((whitespace-check-buffer-indent)
+	((eval c-set-offset
+		   (quote arglist-cont-nonempty)
+		   (quote
+			(c-lineup-gcc-asm-reg c-lineup-arglist)))
+	 (eval c-set-offset
+		   (quote arglist-close)
+		   0)
+	 (eval c-set-offset
+		   (quote arglist-intro)
+		   (quote ++))
+	 (eval c-set-offset
+		   (quote case-label)
+		   0)
+	 (eval c-set-offset
+		   (quote statement-case-open)
+		   0)
+	 (eval c-set-offset
+		   (quote substatement-open)
+		   0)
+	 (sh-indent-for-case-alt . +)
+	 (sh-indent-for-case-label . 0)
+	 (whitespace-check-buffer-indent)
 	 (c-font-lock-extra-types "FILE" "bool" "language" "linebuffer" "fdesc" "node" "regexp")
 	 (editorconfig-lisp-use-default-indent . t)
 	 (c++-font-lock-extra-types "\\sw+_t" "Q[A-Z]\\sw*[a-z]\\sw*")
