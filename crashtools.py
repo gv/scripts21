@@ -764,6 +764,47 @@ class Target(Util):
 					savedPaths += self.saveTmpIfMatch(fp, search, cnt)
 				if len(savedPaths) >= limit:
 					break
+			elif path.endswith(".7z"):
+				tmpDir = os.path.join(self.storagePath, "tmp")
+				if not os.path.isdir(tmpDir):
+					os.mkdir(tmpDir)
+				self.print("Looking in file '%s'...\n" % path, cnt)
+				import subprocess
+				result = subprocess.run(["7z", "l", path], capture_output=True, text=True)
+				if result.returncode != 0:
+					self.print("Failed to list '%s': %s\n" % (path, result.stderr), cnt)
+					continue
+				for line in result.stdout.splitlines():
+					stripped = line.strip()
+					# Skip header, separators, and metadata
+					if not stripped or stripped.startswith("---"):
+						continue
+					# 7z list format: Date Time Attr   Size   Compressed  Name
+					# Example: 2026-08-27 10:55:32 ....A    425435960     85175883  kodwebd.pdb
+					parts = line.split()
+					if len(parts) < 6:
+						continue
+					# Only process actual file entries (date + time + attr with dots/letters)
+					# This skips the summary line which has numbers instead of attr field
+					if not (re.match(r'\d{4}-\d{2}-\d{2}', parts[0]) and re.match(r'[\.AaDdRhHMmsSkS-]+', parts[2])):
+						continue
+					# Name starts after date(1) time(1) attr(1) size(1) compressed(1)
+					name = line[line.index(parts[5]):].strip()
+					self.print("In '%s' found '%s'\n" % (path, name), cnt)
+					bn = os.path.basename(name)
+					if not (bn == search or bn.endswith(".pdb")):
+						continue
+					self.print("Extracting '%s'..." % bn, cnt)
+					fp = os.path.join(tmpDir, bn)
+					extract_result = subprocess.run(
+						["7z", "e", "-y", "-o" + tmpDir, path, name],
+						capture_output=True, text=True)
+					if extract_result.returncode != 0:
+						self.print("Failed to extract '%s': %s\n" % (name, extract_result.stderr), cnt)
+						continue
+					savedPaths += self.saveTmpIfMatch(fp, search, cnt)
+				if len(savedPaths) >= limit:
+					break
 		if not savedPaths:
 			print("No symbol files found")
 			return 1
