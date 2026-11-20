@@ -89,7 +89,24 @@
     tags: system1
     become: true
     shell: 'systemctl daemon-reload'
-  
+
+  - name: Disable USB xHCI wakeup via udev
+    tags: laptop, never
+    become: true
+    copy:
+      dest: /etc/udev/rules.d/90-disable-xhci-wakeup.rules
+      content: |
+        ACTION=="add|change", SUBSYSTEM=="pci", ATTR{class}=="0x0c0330", ATTR{power/wakeup}=="enabled",  ATTR{power/wakeup}="disabled"
+      owner: root
+      group: root
+      mode: "0644"
+    notify: reload udev
+
+  handlers:
+    - name: reload udev
+      become: true
+      command: bash -c "udevadm control --reload-rules && udevadm trigger"
+
 - name: Some actions for a server account
   tags: user, server
   hosts: all
